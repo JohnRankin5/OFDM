@@ -1,0 +1,5 @@
+    RX:
+    SerialNum: '1044739a470b0002ffff270027b37feec0'
+
+    TX:
+    SerialNum: '1044739a470b000ae9ff21009ad37f0427'
