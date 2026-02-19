@@ -1,50 +1,51 @@
-% =========================================================================
-%                         OFDM RECEIVER SCRIPT
-% =========================================================================
-
-% --- 1. PARAMETER SETUP ---
+% The chosen set of OFDM parameters:
 OFDMParams.FFTLength              = 128;   % FFT length
 OFDMParams.CPLength               = 32;    % Cyclic prefix length
-OFDMParams.NumSubcarriers         = 90;    % Number of sub-carriers
-OFDMParams.Subcarrierspacing      = 30e3;  % 30 KHz spacing
-OFDMParams.PilotSubcarrierSpacing = 9;     % Pilot spacing
-OFDMParams.channelBW              = 3e6;   % 3 MHz Bandwidth
+OFDMParams.NumSubcarriers         = 90;    % Number of sub-carriers in the band
+OFDMParams.Subcarrierspacing      = 30e3;  % Sub-carrier spacing of 30 KHz
+OFDMParams.PilotSubcarrierSpacing = 9;     % Pilot sub-carrier spacing
+OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
 
-dataParams.modOrder       = 4;     % QPSK
-dataParams.coderate       = "1/2"; 
-dataParams.numSymPerFrame = 25;    
-dataParams.numFrames      = 3000;  % Total frames to listen for
-dataParams.enableScopes   = true;  % Show graphs
-dataParams.verbosity      = false; 
-dataParams.printData      = true;  
+% Data Parameters
+dataParams.modOrder       = 4;   % Data modulation order
+dataParams.coderate       = "1/2";   % Code rate
+dataParams.numSymPerFrame = 25;   % Number of data symbols per frame
+dataParams.numFrames      = 3000;   % Number of frames to transmit
+dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
+dataParams.verbosity      = false;                    % Control to print the output diagnostics at each level of receiver processing
+dataParams.printData      = true;                    % Control to print the output decoded data
+radioDevice            = "PLUTO";   % Choose radio device for reception
+centerFrequency        = 9.15e8;   % Center Frequency
+gain                   = 10;   % Set radio gain
 
-radioDevice     = "PLUTO"; 
-centerFrequency = 9.15e8;
-gain            = 10; 
+%Make sure the right device is selected and the correct parameter are set
+[sysParam,txParam,transportBlk] = helperOFDMSetParamsSDR(OFDMParams,dataParams);
+sampleRate                       = sysParam.scs*sysParam.FFTLen;                % Sample rate of signal
 
-% Generate System Parameters
-[sysParam, txParam, transportBlk] = helperOFDMSetParamsSDR(OFDMParams, dataParams);
-sampleRate = sysParam.scs * sysParam.FFTLen; 
+% --- YOUR ORIGINAL WORKING RADIO SETUP ---
+ofdmRx = helperGetRadioParams(sysParam,radioDevice,sampleRate,centerFrequency,gain);
+[radio,spectrumAnalyze,constDiag] = helperGetRadioRxObj(ofdmRx);
 
-% --- 2. CONNECT TO SPECIFIC PLUTO ---
+% 1. Define the Serial Number for the Receiver
 targetSerialRx = '1044739a470b0002ffff270027b37feec0'; 
+% 2. Find all connected Plutos
 radios = findPlutoRadio;
 rxRadioID = '';
-
-% Find the specific radio
+% 3. Loop through them to find the match
 for i = 1:length(radios)
     if strcmp(radios(i).SerialNum, targetSerialRx)
-        rxRadioID = radios(i).RadioID;
+        rxRadioID = radios(i).RadioID; % Grab the correct 'usb:X' ID
         break;
     end
 end
-
+% 4. Error check: Did we find it?
 if isempty(rxRadioID)
     error('Receiver Pluto not found! Check connection.');
 end
+disp(['Receiver successfully connected to: ' rxRadioID]);
 
-% Create the Receiver Object (The ONE and ONLY owner of the hardware)
-radio = sdrrx('Pluto', ...
+% 5. Initialize the Receiver using the found ID
+ofdmRx = sdrrx('Pluto', ...
     'RadioID', rxRadioID, ... 
     'CenterFrequency', centerFrequency, ...
     'BasebandSampleRate', sampleRate, ...
@@ -52,59 +53,39 @@ radio = sdrrx('Pluto', ...
     'OutputDataType', 'double', ...
     'GainSource', 'AGC Fast Attack');
 
-disp(['Receiver successfully connected to: ' rxRadioID]);
-
-% --- 3. MANUALLY CREATE SCOPES ---
-% (We need these because we removed the helper function that usually makes them)
-
-% Spectrum Analyzer
-spectrumAnalyze = spectrumAnalyzer( ...
-    'SampleRate', sampleRate, ...
-    'SpectrumType', 'Power', ...
-    'PlotAsTwoSidedSpectrum', true, ...
-    'Title', 'Received OFDM Spectrum', ...
-    'ShowLegend', false);
-
-% Constellation Diagram
-constDiag = comm.ConstellationDiagram( ...
-    'Title', 'Received Constellation (Data & Header)', ...
-    'ShowReferenceConstellation', false, ...
-    'XLimits', [-1.5 1.5], 'YLimits', [-1.5 1.5]);
-
-% --- 4. INITIALIZE RECEIVER LOOP VARIABLES ---
-% Clear old helper data
+% Clear variables
 clear helperOFDMRx helperOFDMRxFrontEnd helperOFDMRxSearch helperOFDMFrequencyOffset;
-
 errorRate = comm.ErrorRate();
 toverflow = 0; 
 rxObj = helperOFDMRxInit(sysParam);
-BER = zeros(1, dataParams.numFrames);
+BER = zeros(1,dataParams.numFrames);
 
-% Dashboard Variables
+% Status tracking variables for the dashboard
 framesSynced = 0;
 lastMessage = "Waiting for data...";
 currentBER = 0;
 
-% --- 5. MAIN LOOP (THE DASHBOARD) ---
+% Print the Fixed-Width Header
 fprintf('\nStarting Receiver...\n');
 fprintf('======================================================================================\n');
 fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
 fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
 
+% --- MAIN LOOP ---
 for frameNum = 1:dataParams.numFrames
     sysParam.frameNum = frameNum;
     
-    % Get Data from Radio
+    % Receive Data
     [rxWaveform, ~, overflow] = radio();
     toverflow = toverflow + overflow;
     
-    % Process Data (Only if hardware buffer didn't overflow)
+    % Only process if no overflow
     if ~overflow
-        rxIn = helperOFDMRxFrontEnd(rxWaveform, sysParam, rxObj);
-        [rxDataBits, isConnected, toff, rxDiagnostics] = helperOFDMRx(rxIn, sysParam, rxObj);
+        rxIn = helperOFDMRxFrontEnd(rxWaveform,sysParam,rxObj);
+        [rxDataBits,isConnected,toff,rxDiagnostics] = helperOFDMRx(rxIn,sysParam,rxObj);
         sysParam.timingAdvance = toff;
         
-        % If Signal Found (Synced)
+        % --- IF SIGNAL IS LOCKED ---
         if isConnected
             framesSynced = framesSynced + 1;
             
@@ -114,24 +95,25 @@ for frameNum = 1:dataParams.numFrames
             currentBER = berVals(1);
             
             % Decode Message
-            numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits), 7);
-            recData = char(bit2int(reshape(rxDataBits(1:numBitsToDecode), 7, []), 7));
+            numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits),7);
+            recData = char(bit2int(reshape(rxDataBits(1:numBitsToDecode),7,[]),7));
+            
+            % Save message for the table display
             lastMessage = string(recData); 
             
-            % Update Constellation Plot
+            % Update Constellation Plot (Restored to MathWorks Helper Format)
             if dataParams.enableScopes
-                allDots = [complex(rxDiagnostics.rxConstellationHeader(:)); ...
-                complex(rxDiagnostics.rxConstellationData(:))];
-                constDiag(allDots);
+                constDiag(complex(rxDiagnostics.rxConstellationHeader(:)), ...
+                          complex(rxDiagnostics.rxConstellationData(:)));
             end
         end
         
-        % Update Spectrum Analyzer
+        % Update Spectrum Analyzer (if enabled)
         if dataParams.enableScopes
             spectrumAnalyze(rxWaveform);
         end
         
-        % --- PRINT DASHBOARD ROW (Every 100 frames) ---
+        % --- PRINT TABLE ROW (Every 100 frames) ---
         if mod(frameNum, 100) == 0
             % Calculate progress percentage
             progress = (frameNum / dataParams.numFrames) * 100;
@@ -143,9 +125,8 @@ for frameNum = 1:dataParams.numFrames
                 statusStr = "SEARCHING";
             end
             
-            % Clean up message for display
+            % Truncate message and clean newlines (prevents table breaking)
             msgDisplay = extractBefore(lastMessage, min(strlength(lastMessage)+1, 25));
-            % Remove newlines to keep table straight
             msgDisplay = replace(msgDisplay, newline, ' '); 
             
             % Print formatted row
@@ -155,11 +136,9 @@ for frameNum = 1:dataParams.numFrames
     end
 end
 
-% --- 6. FINAL SUMMARY ---
+% Final Summary
 fprintf('======================================================================================\n');
 fprintf('Simulation complete!\n');
 fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
     dataParams.numFrames, framesSynced, mean(BER(BER~=0)));
-
-% Release hardware
 release(radio);
