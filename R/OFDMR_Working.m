@@ -93,6 +93,37 @@ for frameNum = 1:dataParams.numFrames
             berVals = errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
             BER(frameNum) = berVals(1);
             currentBER = berVals(1);
+
+
+            % --- PLOT RAW POST-DEMODULATION DATA ---
+            if dataParams.enableScopes
+                % Create a new figure (Figure 2 so it doesn't overwrite your others)
+                figure(2); 
+                
+                % Plot 1: The Heatmap of the Grid
+                subplot(1, 2, 1);
+                % abs() gets the magnitude of the complex numbers
+                imagesc(abs(rxDiagnostics.rawGrid)); 
+                title('Raw Resource Grid (Magnitude)');
+                xlabel('OFDM Symbol Index');
+                ylabel('Subcarrier Index');
+                colorbar;
+                
+                % Plot 2: The Raw Scatter Plot (Pre-Equalization)
+                subplot(1, 2, 2);
+                % We flatten the grid into a 1D list and plot the complex points
+                plot(rxDiagnostics.rawGrid(:), '.b'); 
+                title('Raw Constellation (Pre-EQ)');
+                xlabel('In-Phase');
+                ylabel('Quadrature');
+                axis([-2 2 -2 2]); grid on;
+                
+                drawnow; % Force MATLAB to update the figure instantly
+            end
+            % ---------------------------------------
+
+
+            
             
             % Decode Message
             numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits),7);
