@@ -17,10 +17,20 @@ end
 frameIndex = 1;
 selectedFrame = demodulatedData(frameIndex);
 
-fprintf('Visualizing Frame %d (Message: %s)\n', selectedFrame.Frame, selectedFrame.Message);
+fprintf('\n=================================\n');
+fprintf('Visualizing Frame %d \n', selectedFrame.Frame);
+fprintf('=================================\n');
+fprintf('Message     : %s\n', selectedFrame.Message);
+fprintf('BER         : %.4f\n', selectedFrame.BER);
 
 % 3. Extract the raw grid (Complex matrix of 80x24)
 rawGrid = selectedFrame.RawGrid;
+
+fprintf('\n--- Data Structure Sizes ---\n');
+fprintf('demodulatedData Array : %d x %d\n', size(demodulatedData, 1), size(demodulatedData, 2));
+fprintf('RawBits Length        : %d x %d\n', size(selectedFrame.RawBits, 1), size(selectedFrame.RawBits, 2));
+fprintf('RawGrid Dimensions    : %d (Subcarriers) x %d (Symbols)\n', size(rawGrid, 1), size(rawGrid, 2));
+fprintf('=================================\n\n');
 
 % 4. Create the figure
 figure('Name', sprintf('OFDM Resource Grid Analysis - Frame %d', selectedFrame.Frame), 'NumberTitle', 'off', 'Position', [100, 100, 1000, 400]);
