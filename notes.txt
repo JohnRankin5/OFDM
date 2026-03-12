@@ -5,5 +5,17 @@
     SerialNum: '1044739a470b000ae9ff21009ad37f0427'
 
 
-run_simulation.bat
+.mat file:
+Holds a 1 by N struct array where N is the number of frames captured.
 
+
+demodulatedData = struct('Frame', {}, 'BER', {}, 'Message', {}, 'RawBits', {}, 'RawGrid', {});
+
+1. Frame (Int): The sequential index of the frame (e.g., 1 to N frames).
+2. BER (Double): Bit Error Rate for the frame (0.0 = perfect reception).
+3. Message (String): The decoded ASCII text payload of the frame.
+4. RawBits (Col Vector): The raw decoded binary payload (post-error correction).
+5. RawGrid (80x24 Complex Matrix): The physical Time-Frequency Resource Grid (post-FFT).
+   - Rows (80): Active subcarriers (70 data + 10 pilots).
+   - Columns (24): Consecutive OFDM symbols over time (10ms).
+   - Values: Complex IQ points representing mapped QAM/QPSK symbols.
