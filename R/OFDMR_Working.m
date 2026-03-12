@@ -10,7 +10,7 @@ OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
 dataParams.modOrder       = 4;   % Data modulation order
 dataParams.coderate       = "1/2";   % Code rate
 dataParams.numSymPerFrame = 25;   % Number of data symbols per frame
-dataParams.numFrames      = 3000;   % Number of frames to transmit
+dataParams.numFrames      = 500;   % Number of frames to transmit
 dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
 dataParams.verbosity      = false;                    % Control to print the output diagnostics at each level of receiver processing
 dataParams.printData      = true;                    % Control to print the output decoded data
@@ -64,6 +64,10 @@ BER = zeros(1,dataParams.numFrames);
 framesSynced = 0;
 lastMessage = "Waiting for data...";
 currentBER = 0;
+
+% Struct to save demodulated information
+demodulatedData = struct('Frame', {}, 'BER', {}, 'Message', {}, 'RawBits', {}, 'RawGrid', {});
+dataIdx = 1;
 
 % Print the Fixed-Width Header
 fprintf('\nStarting Receiver...\n');
@@ -131,6 +135,14 @@ for frameNum = 1:dataParams.numFrames
             
             % Save message for the table display
             lastMessage = string(recData); 
+
+            % Store the demodulated information for exporting later
+            demodulatedData(dataIdx).Frame = frameNum;
+            demodulatedData(dataIdx).BER = currentBER;
+            demodulatedData(dataIdx).Message = lastMessage;
+            demodulatedData(dataIdx).RawBits = rxDataBits;
+            demodulatedData(dataIdx).RawGrid = rxDiagnostics.rawGrid; % The OFDM grid (complex values)
+            dataIdx = dataIdx + 1; 
             
             % Update Constellation Plot (Restored to MathWorks Helper Format)
             if dataParams.enableScopes
@@ -173,3 +185,7 @@ fprintf('Simulation complete!\n');
 fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
     dataParams.numFrames, framesSynced, mean(BER(BER~=0)));
 release(radio);
+
+% Save demodulated data including the raw subcarrier grid
+save('OFDM_Demodulated_Data.mat', 'demodulatedData');
+fprintf('Saved demodulated data to OFDM_Demodulated_Data.mat\n');

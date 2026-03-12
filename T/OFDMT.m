@@ -12,7 +12,7 @@ OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
 dataParams.modOrder       = 4;   % Data modulation order
 dataParams.coderate       = "1/2";   % Code rate
 dataParams.numSymPerFrame = 25;   % Number of data symbols per frame 20 for setup1
-dataParams.numFrames      = 3000;   % Number of frames to transmit
+dataParams.numFrames      = 5000;   % Number of frames to transmit
 dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
 dataParams.verbosity      = false;                    % Switch to enable or disable the data diagnostic output
 
