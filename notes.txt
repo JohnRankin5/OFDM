@@ -3,3 +3,7 @@
 
     TX:
     SerialNum: '1044739a470b000ae9ff21009ad37f0427'
+
+
+run_simulation.bat
+

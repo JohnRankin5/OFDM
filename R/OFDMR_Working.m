@@ -10,7 +10,7 @@ OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
 dataParams.modOrder       = 4;   % Data modulation order
 dataParams.coderate       = "1/2";   % Code rate
 dataParams.numSymPerFrame = 25;   % Number of data symbols per frame
-dataParams.numFrames      = 500;   % Number of frames to transmit
+dataParams.numFrames      = 25;   % Number of frames to transmit
 dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
 dataParams.verbosity      = false;                    % Control to print the output diagnostics at each level of receiver processing
 dataParams.printData      = true;                    % Control to print the output decoded data
@@ -69,15 +69,14 @@ currentBER = 0;
 demodulatedData = struct('Frame', {}, 'BER', {}, 'Message', {}, 'RawBits', {}, 'RawGrid', {});
 dataIdx = 1;
 
-% Print the Fixed-Width Header
-fprintf('\nStarting Receiver...\n');
-fprintf('======================================================================================\n');
-fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
-fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
+fprintf('\nWaiting for signal (receiver will run indefinitely until signal is found)...\n');
 
 % --- MAIN LOOP ---
-for frameNum = 1:dataParams.numFrames
-    sysParam.frameNum = frameNum;
+framesCaptured = 0;
+signalDetected = false;
+
+while framesCaptured < dataParams.numFrames
+    sysParam.frameNum = framesCaptured + 1;
     
     % Receive Data
     [rxWaveform, ~, overflow] = radio();
@@ -89,92 +88,105 @@ for frameNum = 1:dataParams.numFrames
         [rxDataBits,isConnected,toff,rxDiagnostics] = helperOFDMRx(rxIn,sysParam,rxObj);
         sysParam.timingAdvance = toff;
         
-        % --- IF SIGNAL IS LOCKED ---
-        if isConnected
-            framesSynced = framesSynced + 1;
+        % Detect signal for the first time
+        if isConnected && ~signalDetected
+            signalDetected = true;
+            fprintf('Signal detected! Starting capture of %d frames...\n', dataParams.numFrames);
             
-            % Calculate BER
-            berVals = errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
-            BER(frameNum) = berVals(1);
-            currentBER = berVals(1);
-
-
-            % --- PLOT RAW POST-DEMODULATION DATA ---
-            if dataParams.enableScopes
-                % Create a new figure (Figure 2 so it doesn't overwrite your others)
-                figure(2); 
-                
-                % Plot 1: The Heatmap of the Grid
-                subplot(1, 2, 1);
-                % abs() gets the magnitude of the complex numbers
-                imagesc(abs(rxDiagnostics.rawGrid)); 
-                title('Raw Resource Grid (Magnitude)');
-                xlabel('OFDM Symbol Index');
-                ylabel('Subcarrier Index');
-                colorbar;
-                
-                % Plot 2: The Raw Scatter Plot (Pre-Equalization)
-                subplot(1, 2, 2);
-                % We flatten the grid into a 1D list and plot the complex points
-                plot(rxDiagnostics.rawGrid(:), '.b'); 
-                title('Raw Constellation (Pre-EQ)');
-                xlabel('In-Phase');
-                ylabel('Quadrature');
-                axis([-2 2 -2 2]); grid on;
-                
-                drawnow; % Force MATLAB to update the figure instantly
-            end
-            % ---------------------------------------
-
-
-            
-            
-            % Decode Message
-            numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits),7);
-            recData = char(bit2int(reshape(rxDataBits(1:numBitsToDecode),7,[]),7));
-            
-            % Save message for the table display
-            lastMessage = string(recData); 
-
-            % Store the demodulated information for exporting later
-            demodulatedData(dataIdx).Frame = frameNum;
-            demodulatedData(dataIdx).BER = currentBER;
-            demodulatedData(dataIdx).Message = lastMessage;
-            demodulatedData(dataIdx).RawBits = rxDataBits;
-            demodulatedData(dataIdx).RawGrid = rxDiagnostics.rawGrid; % The OFDM grid (complex values)
-            dataIdx = dataIdx + 1; 
-            
-            % Update Constellation Plot (Restored to MathWorks Helper Format)
-            if dataParams.enableScopes
-                constDiag(complex(rxDiagnostics.rxConstellationHeader(:)), ...
-                          complex(rxDiagnostics.rxConstellationData(:)));
-            end
+            % Print the Fixed-Width Header
+            fprintf('======================================================================================\n');
+            fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
+            fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
         end
         
-        % Update Spectrum Analyzer (if enabled)
-        if dataParams.enableScopes
-            spectrumAnalyze(rxWaveform);
-        end
-        
-        % --- PRINT TABLE ROW (Every 100 frames) ---
-        if mod(frameNum, 100) == 0
-            % Calculate progress percentage
-            progress = (frameNum / dataParams.numFrames) * 100;
+        % Only process and count loops if we have begun detection
+        if signalDetected
+            framesCaptured = framesCaptured + 1;
+            frameNum = framesCaptured;
             
-            % Set status string
+            % --- IF SIGNAL IS LOCKED ---
             if isConnected
-                statusStr = "LOCKED   ";
-            else
-                statusStr = "SEARCHING";
+                framesSynced = framesSynced + 1;
+                
+                % Calculate BER
+                berVals = errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
+                BER(frameNum) = berVals(1);
+                currentBER = berVals(1);
+
+                % --- PLOT RAW POST-DEMODULATION DATA ---
+                if dataParams.enableScopes
+                    % Create a new figure (Figure 2 so it doesn't overwrite your others)
+                    figure(2); 
+                    
+                    % Plot 1: The Heatmap of the Grid
+                    subplot(1, 2, 1);
+                    % abs() gets the magnitude of the complex numbers
+                    imagesc(abs(rxDiagnostics.rawGrid)); 
+                    title('Raw Resource Grid (Magnitude)');
+                    xlabel('OFDM Symbol Index');
+                    ylabel('Subcarrier Index');
+                    colorbar;
+                    
+                    % Plot 2: The Raw Scatter Plot (Pre-Equalization)
+                    subplot(1, 2, 2);
+                    % We flatten the grid into a 1D list and plot the complex points
+                    plot(rxDiagnostics.rawGrid(:), '.b'); 
+                    title('Raw Constellation (Pre-EQ)');
+                    xlabel('In-Phase');
+                    ylabel('Quadrature');
+                    axis([-2 2 -2 2]); grid on;
+                    
+                    drawnow; % Force MATLAB to update the figure instantly
+                end
+                % ---------------------------------------
+                
+                % Decode Message
+                numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits),7);
+                recData = char(bit2int(reshape(rxDataBits(1:numBitsToDecode),7,[]),7));
+                
+                % Save message for the table display
+                lastMessage = string(recData); 
+
+                % Store the demodulated information for exporting later
+                demodulatedData(dataIdx).Frame = frameNum;
+                demodulatedData(dataIdx).BER = currentBER;
+                demodulatedData(dataIdx).Message = lastMessage;
+                demodulatedData(dataIdx).RawBits = rxDataBits;
+                demodulatedData(dataIdx).RawGrid = rxDiagnostics.rawGrid; % The OFDM grid (complex values)
+                dataIdx = dataIdx + 1; 
+                
+                % Update Constellation Plot (Restored to MathWorks Helper Format)
+                if dataParams.enableScopes
+                    constDiag(complex(rxDiagnostics.rxConstellationHeader(:)), ...
+                              complex(rxDiagnostics.rxConstellationData(:)));
+                end
             end
             
-            % Truncate message and clean newlines (prevents table breaking)
-            msgDisplay = extractBefore(lastMessage, min(strlength(lastMessage)+1, 25));
-            msgDisplay = replace(msgDisplay, newline, ' '); 
+            % Update Spectrum Analyzer (if enabled)
+            if dataParams.enableScopes
+                spectrumAnalyze(rxWaveform);
+            end
             
-            % Print formatted row
-            fprintf('| %3.0f%%     |  %s  |  %.4f   |   %4d    | %s\n', ...
-                progress, statusStr, currentBER, toverflow, msgDisplay);
+            % --- PRINT TABLE ROW (Every 100 frames) ---
+            if mod(frameNum, 100) == 0
+                % Calculate progress percentage
+                progress = (frameNum / dataParams.numFrames) * 100;
+                
+                % Set status string
+                if isConnected
+                    statusStr = "LOCKED   ";
+                else
+                    statusStr = "SEARCHING";
+                end
+                
+                % Truncate message and clean newlines (prevents table breaking)
+                msgDisplay = extractBefore(lastMessage, min(strlength(lastMessage)+1, 25));
+                msgDisplay = replace(msgDisplay, newline, ' '); 
+                
+                % Print formatted row
+                fprintf('| %3.0f%%     |  %s  |  %.4f   |   %4d    | %s\n', ...
+                    progress, statusStr, currentBER, toverflow, msgDisplay);
+            end
         end
     end
 end
