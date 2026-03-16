@@ -1,35 +1,23 @@
-%Constants:
+% =============================================================================
+% OFDM TRANSMITTER
+% Shared parameters (OFDMParams, modulation, RF, message) live in config.m.
+% Edit config.m to keep TX and RX in sync.
+% =============================================================================
 
-% The chosen set of OFDM parameters:
-OFDMParams.FFTLength              = 128;   % FFT length
-OFDMParams.CPLength               = 32;    % Cyclic prefix length
-OFDMParams.NumSubcarriers         = 90;    % Number of sub-carriers in the band
-OFDMParams.Subcarrierspacing      = 30e3;  % Sub-carrier spacing of 30 KHz
-OFDMParams.PilotSubcarrierSpacing = 9;     % Pilot sub-carrier spacing
-OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
+% Load shared parameters
+run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
-% Data Parameters
-dataParams.modOrder       = 4;   % Data modulation order
-dataParams.coderate       = "1/2";   % Code rate
-dataParams.numSymPerFrame = 25;   % Number of data symbols per frame 20 for setup1
-dataParams.numFrames      = 5000;   % Number of frames to transmit
-dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
-dataParams.verbosity      = false;                    % Switch to enable or disable the data diagnostic output
-
-% ---- CUSTOM MESSAGE ----
-% Set the text you want to transmit here. Leave empty ('') for default 'Hello World! '
-% NOTE: Max ~246 ASCII characters per frame. Shorter messages repeat to fill the frame;
-%       longer messages will be truncated after 246 chars.
-dataParams.message        = 'Testing123';        % <-- Change this to your custom message
-% ------------------------
+% TX-specific parameters
+dataParams.numFrames    = 5000;  % How many times to broadcast the waveform
+dataParams.enableScopes = true;  % Show spectrum analyzer scope
+dataParams.verbosity    = false; % Verbose debug output (true = per-frame logs)
 
 
 %Device type and center frequnecy:
 radioDevice = "PLUTO";  
 dev = sdrdev('Pluto');
 
-centerFrequency = 9.15e8;  % Center Frequency
-gain            = -10;
+gain = -10;
 
 
 

@@ -1,22 +1,19 @@
-% The chosen set of OFDM parameters:
-OFDMParams.FFTLength              = 128;   % FFT length
-OFDMParams.CPLength               = 32;    % Cyclic prefix length
-OFDMParams.NumSubcarriers         = 90;    % Number of sub-carriers in the band
-OFDMParams.Subcarrierspacing      = 30e3;  % Sub-carrier spacing of 30 KHz
-OFDMParams.PilotSubcarrierSpacing = 9;     % Pilot sub-carrier spacing
-OFDMParams.channelBW              = 3e6;   % Bandwidth of the channel 3 MHz
+% =============================================================================
+% OFDM RECEIVER
+% Shared parameters (OFDMParams, modulation, RF, message) live in config.m.
+% Edit config.m to keep TX and RX in sync.
+% =============================================================================
 
-% Data Parameters
-dataParams.modOrder       = 4;   % Data modulation order
-dataParams.coderate       = "1/2";   % Code rate
-dataParams.numSymPerFrame = 25;   % Number of data symbols per frame
-dataParams.numFrames      = 25;   % Number of frames to transmit
-dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
-dataParams.verbosity      = false;                    % Control to print the output diagnostics at each level of receiver processing
-dataParams.printData      = true;                    % Control to print the output decoded data
-radioDevice            = "PLUTO";   % Choose radio device for reception
-centerFrequency        = 9.15e8;   % Center Frequency
-gain                   = 10;   % Set radio gain
+% Load shared parameters
+run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
+
+% RX-specific parameters
+dataParams.numFrames    = 25;    % Number of frames to capture
+dataParams.enableScopes = true;  % Show spectrum/constellation scopes
+dataParams.verbosity    = false; % Verbose debug output
+dataParams.printData    = true;  % Print decoded message to console
+radioDevice = "PLUTO";           % SDR device type
+gain        = 10;                % Receiver gain (dB) — increase if signal is weak
 
 %Make sure the right device is selected and the correct parameter are set
 [sysParam,txParam,transportBlk] = helperOFDMSetParamsSDR(OFDMParams,dataParams);
@@ -65,8 +62,27 @@ framesSynced = 0;
 lastMessage = "Waiting for data...";
 currentBER = 0;
 
-% Struct to save demodulated information
-demodulatedData = struct('Frame', {}, 'BER', {}, 'Message', {}, 'RawBits', {}, 'RawGrid', {});
+% --- Setup versioned captures directory ---
+captureDir = fullfile(fileparts(mfilename('fullpath')), 'captures');
+if ~exist(captureDir, 'dir')
+    mkdir(captureDir);
+    fprintf('Created captures directory: %s\n', captureDir);
+end
+captureTimestamp = datestr(now, 'yyyy-mm-dd_HH-MM-SS');
+captureFilename  = fullfile(captureDir, sprintf('capture_%s.mat', captureTimestamp));
+
+% Struct to save demodulated information per frame:
+%   Frame         - sequential frame index
+%   BER           - per-frame bit error rate (0.0 = perfect)
+%   Message       - decoded ASCII payload
+%   RawBits       - raw decoded binary bits (post-error-correction)
+%   RawGrid       - complex time-freq resource grid (pre-equalization)
+%   SNR_dB        - estimated SNR from post-equalization EVM
+%   Timestamp     - wall-clock time this frame was decoded
+%   headerCRCPass - true if header CRC check passed
+%   dataCRCPass   - true if data CRC check passed
+demodulatedData = struct('Frame',{}, 'BER',{}, 'Message',{}, 'RawBits',{}, ...
+    'RawGrid',{}, 'SNR_dB',{}, 'Timestamp',{}, 'headerCRCPass',{}, 'dataCRCPass',{});
 dataIdx = 1;
 
 fprintf('\nWaiting for signal (receiver will run indefinitely until signal is found)...\n');
@@ -150,12 +166,27 @@ while framesCaptured < dataParams.numFrames
                 % Save message for the table display
                 lastMessage = string(recData); 
 
-                % Store the demodulated information for exporting later
-                demodulatedData(dataIdx).Frame = frameNum;
-                demodulatedData(dataIdx).BER = currentBER;
-                demodulatedData(dataIdx).Message = lastMessage;
-                demodulatedData(dataIdx).RawBits = rxDataBits;
-                demodulatedData(dataIdx).RawGrid = rxDiagnostics.rawGrid; % The OFDM grid (complex values)
+                % --- Estimate SNR via post-equalization EVM (QPSK hard decisions) ---
+                eqData = rxDiagnostics.rxConstellationData(:);
+                if ~isempty(eqData)
+                    decisions  = (sign(real(eqData)) + 1j*sign(imag(eqData))) / sqrt(2);
+                    noisePow   = mean(abs(eqData - decisions).^2);
+                    sigPow     = mean(abs(decisions).^2);
+                    SNR_dB     = 10 * log10(sigPow / max(noisePow, 1e-10));
+                else
+                    SNR_dB = NaN;
+                end
+
+                % Store demodulated information for export
+                demodulatedData(dataIdx).Frame         = frameNum;
+                demodulatedData(dataIdx).BER           = currentBER;
+                demodulatedData(dataIdx).Message       = lastMessage;
+                demodulatedData(dataIdx).RawBits       = rxDataBits;
+                demodulatedData(dataIdx).RawGrid       = rxDiagnostics.rawGrid;
+                demodulatedData(dataIdx).SNR_dB        = SNR_dB;
+                demodulatedData(dataIdx).Timestamp     = datestr(now,'yyyy-mm-dd HH:MM:SS.FFF');
+                demodulatedData(dataIdx).headerCRCPass = ~rxDiagnostics.headerCRCErrorFlag;
+                demodulatedData(dataIdx).dataCRCPass   = ~rxDiagnostics.dataCRCErrorFlag(end);
                 dataIdx = dataIdx + 1; 
                 
                 % Update Constellation Plot (Restored to MathWorks Helper Format)
@@ -201,6 +232,28 @@ fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
     dataParams.numFrames, framesSynced, mean(BER(BER~=0)));
 release(radio);
 
-% Save demodulated data including the raw subcarrier grid
-save('OFDM_Demodulated_Data.mat', 'demodulatedData');
-fprintf('Saved demodulated data to OFDM_Demodulated_Data.mat\n');
+% --- Save 1: Versioned timestamped file (never overwritten, safe archive) ---
+save(captureFilename, 'demodulatedData', 'sysParam');
+fprintf('Capture saved : %s\n', captureFilename);
+
+% --- Save 2: Fixed-name file for quick access by plot_ofdm_grid.m etc. ---
+latestFile = fullfile(fileparts(mfilename('fullpath')), 'OFDM_Demodulated_Data.mat');
+save(latestFile, 'demodulatedData', 'sysParam');
+
+% --- Save 3: JSON metadata sidecar (human-readable, Python/ML pipeline friendly) ---
+meta.captureTime       = captureTimestamp;
+meta.numFramesCaptured = framesCaptured;
+meta.numFramesSynced   = framesSynced;
+meta.avgBER            = mean(BER(BER > 0));
+meta.centerFreq_Hz     = centerFrequency;
+meta.sampleRate_Hz     = sampleRate;
+meta.modOrder          = sysParam.modOrder;
+meta.FFTLength         = sysParam.FFTLen;
+meta.CPLength          = sysParam.CPLen;
+meta.usedSubcarriers   = sysParam.usedSubCarr;
+meta.numSymPerFrame    = sysParam.numSymPerFrame;
+jsonFile = strrep(captureFilename, '.mat', '_metadata.json');
+fid = fopen(jsonFile, 'w');
+fprintf(fid, '%s', jsonencode(meta));
+fclose(fid);
+fprintf('Metadata saved: %s\n', jsonFile);
