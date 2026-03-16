@@ -16,6 +16,13 @@ dataParams.numFrames      = 5000;   % Number of frames to transmit
 dataParams.enableScopes   = true;                    % Switch to enable or disable the visibility of scopes
 dataParams.verbosity      = false;                    % Switch to enable or disable the data diagnostic output
 
+% ---- CUSTOM MESSAGE ----
+% Set the text you want to transmit here. Leave empty ('') for default 'Hello World! '
+% NOTE: Max ~246 ASCII characters per frame. Shorter messages repeat to fill the frame;
+%       longer messages will be truncated after 246 chars.
+dataParams.message        = 'Testing123';        % <-- Change this to your custom message
+% ------------------------
+
 
 %Device type and center frequnecy:
 radioDevice = "PLUTO";  

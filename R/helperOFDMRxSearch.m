@@ -63,7 +63,6 @@ if ~syncDetected
         end
     else
         syncDetected = false;
-        fprintf('.');
     end
 else
     % Estimate frequency offset after finding sync symbol
@@ -71,7 +70,6 @@ else
         % Run the frequency offset estimator and start the averaging to
         % converge to the final estimate
         foff = helperOFDMFrequencyOffset(rxIn,sysParam);
-        fprintf('.');
         campedDelay = campedDelay - 1;
     else
         fprintf('\nReceiver camped.\n');
