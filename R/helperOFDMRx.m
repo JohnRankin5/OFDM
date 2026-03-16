@@ -72,11 +72,6 @@ else
     if sysParam.verbosity > 0
         fprintf('Detected and processing frame %d\n', sysParam.frameNum);
         fprintf('------------------------------------------\n');
-    else
-        fprintf('.');
-        if floor(sysParam.frameNum/80) == sysParam.frameNum/80
-            fprintf('\n');
-        end
     end
 
     % Run frame processing

@@ -108,10 +108,13 @@ while framesCaptured < dataParams.numFrames
             if isConnected
                 framesSynced = framesSynced + 1;
                 
-                % Calculate BER
-                berVals = errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
-                BER(frameNum) = berVals(1);
-                currentBER = berVals(1);
+                % Per-frame BER: directly compare this frame's bits (not cumulative)
+                numErrors   = sum(xor(transportBlk(1:sysParam.trBlkSize).', rxDataBits));
+                currentBER  = numErrors / sysParam.trBlkSize;
+                BER(frameNum) = currentBER;
+                
+                % Also feed into comm.ErrorRate for the overall session average (final summary only)
+                errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
 
                 % --- PLOT RAW POST-DEMODULATION DATA ---
                 if dataParams.enableScopes
