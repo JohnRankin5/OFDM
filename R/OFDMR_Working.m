@@ -8,11 +8,11 @@
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
 % RX-specific parameters
-dataParams.numFrames    = 25;    % Number of frames to capture
+dataParams.numFrames    = rxNumFrames; % Set in config.m → rxNumFrames
 dataParams.enableScopes = true;  % Show spectrum/constellation scopes
 dataParams.verbosity    = false; % Verbose debug output
 dataParams.printData    = true;  % Print decoded message to console
-radioDevice = "PLUTO";           % SDR device type
+radioDevice = 'PLUTO';           % SDR device type
 gain        = 10;                % Receiver gain (dB) — increase if signal is weak
 
 %Make sure the right device is selected and the correct parameter are set
@@ -59,8 +59,8 @@ BER = zeros(1,dataParams.numFrames);
 
 % Status tracking variables for the dashboard
 framesSynced = 0;
-lastMessage = "Waiting for data...";
-currentBER = 0;
+lastMessage  = 'Waiting for data...';  % char array (not string object)
+currentBER   = 0;
 
 % --- Setup versioned captures directory ---
 captureDir = fullfile(fileparts(mfilename('fullpath')), 'captures');
@@ -75,15 +75,23 @@ captureFilename  = fullfile(captureDir, sprintf('capture_%s.mat', captureTimesta
 %   Frame         - sequential frame index
 %   BER           - per-frame bit error rate (0.0 = perfect)
 %   Message       - decoded ASCII payload
-%   RawBits       - raw decoded binary bits (post-error-correction)
-%   RawGrid       - complex time-freq resource grid (pre-equalization)
+%   TxBits        - known transmitted bits (ground truth for ML training)
+%   RawBits       - received decoded bits (compare against TxBits)
+%   RawGrid       - complex time-freq resource grid (pre-equalization, ML input)
 %   SNR_dB        - estimated SNR from post-equalization EVM
 %   Timestamp     - wall-clock time this frame was decoded
 %   headerCRCPass - true if header CRC check passed
 %   dataCRCPass   - true if data CRC check passed
-demodulatedData = struct('Frame',{}, 'BER',{}, 'Message',{}, 'RawBits',{}, ...
-    'RawGrid',{}, 'SNR_dB',{}, 'Timestamp',{}, 'headerCRCPass',{}, 'dataCRCPass',{});
+demodulatedData = struct('Frame',{}, 'BER',{}, 'Message',{}, ...
+    'TxBits',{}, 'RawBits',{}, 'RawGrid',{}, ...
+    'SNR_dB',{}, 'Timestamp',{}, 'headerCRCPass',{}, 'dataCRCPass',{});
 dataIdx = 1;
+
+% --- Create flag file so TX knows to keep transmitting ---
+% OFDMT.m watches for this file and loops until it disappears.
+flagFile = fullfile(fileparts(mfilename('fullpath')), 'rx_running.flag');
+fid = fopen(flagFile, 'w'); fclose(fid);
+fprintf('Flag file created: TX will keep broadcasting until RX finishes.\n');
 
 fprintf('\nWaiting for signal (receiver will run indefinitely until signal is found)...\n');
 
@@ -163,8 +171,8 @@ while framesCaptured < dataParams.numFrames
                 numBitsToDecode = length(rxDataBits) - mod(length(rxDataBits),7);
                 recData = char(bit2int(reshape(rxDataBits(1:numBitsToDecode),7,[]),7));
                 
-                % Save message for the table display
-                lastMessage = string(recData); 
+                % Save as char array (not MATLAB string object)
+                lastMessage = recData; 
 
                 % --- Estimate SNR via post-equalization EVM (QPSK hard decisions) ---
                 eqData = rxDiagnostics.rxConstellationData(:);
@@ -181,8 +189,9 @@ while framesCaptured < dataParams.numFrames
                 demodulatedData(dataIdx).Frame         = frameNum;
                 demodulatedData(dataIdx).BER           = currentBER;
                 demodulatedData(dataIdx).Message       = lastMessage;
-                demodulatedData(dataIdx).RawBits       = rxDataBits;
-                demodulatedData(dataIdx).RawGrid       = rxDiagnostics.rawGrid;
+                demodulatedData(dataIdx).TxBits        = transportBlk(1:sysParam.trBlkSize).'; % known TX bits (ground truth)
+                demodulatedData(dataIdx).RawBits       = rxDataBits;                           % received decoded bits
+                demodulatedData(dataIdx).RawGrid       = rxDiagnostics.rawGrid;                % pre-EQ resource grid (ML input)
                 demodulatedData(dataIdx).SNR_dB        = SNR_dB;
                 demodulatedData(dataIdx).Timestamp     = datestr(now,'yyyy-mm-dd HH:MM:SS.FFF');
                 demodulatedData(dataIdx).headerCRCPass = ~rxDiagnostics.headerCRCErrorFlag;
@@ -208,14 +217,15 @@ while framesCaptured < dataParams.numFrames
                 
                 % Set status string
                 if isConnected
-                    statusStr = "LOCKED   ";
+                    statusStr = 'LOCKED   ';
                 else
-                    statusStr = "SEARCHING";
+                    statusStr = 'SEARCHING';
                 end
                 
-                % Truncate message and clean newlines (prevents table breaking)
-                msgDisplay = extractBefore(lastMessage, min(strlength(lastMessage)+1, 25));
-                msgDisplay = replace(msgDisplay, newline, ' '); 
+                % Truncate message and clean newlines (char-safe)
+                maxLen = min(length(lastMessage), 24);
+                msgDisplay = lastMessage(1:maxLen);
+                msgDisplay = strrep(msgDisplay, newline, ' '); 
                 
                 % Print formatted row
                 fprintf('| %3.0f%%     |  %s  |  %.4f   |   %4d    | %s\n', ...
@@ -237,7 +247,9 @@ save(captureFilename, 'demodulatedData', 'sysParam');
 fprintf('Capture saved : %s\n', captureFilename);
 
 % --- Save 2: Fixed-name file for quick access by plot_ofdm_grid.m etc. ---
-latestFile = fullfile(fileparts(mfilename('fullpath')), 'OFDM_Demodulated_Data.mat');
+% --- Delete flag file so TX knows to stop ---
+if exist(flagFile, 'file'), delete(flagFile); end
+fprintf('Flag file removed: TX will stop after its current frame.\n');
 save(latestFile, 'demodulatedData', 'sysParam');
 
 % --- Save 3: JSON metadata sidecar (human-readable, Python/ML pipeline friendly) ---
