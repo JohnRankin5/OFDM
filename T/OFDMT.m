@@ -8,7 +8,7 @@
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
 % TX-specific parameters
-dataParams.numFrames    = 5000;  % How many times to broadcast the waveform
+dataParams.numFrames    = txNumFrames; % Set in config.m → txNumFrames
 dataParams.enableScopes = true;  % Show spectrum analyzer scope
 dataParams.verbosity    = false; % Verbose debug output (true = per-frame logs)
 
@@ -105,6 +105,22 @@ tunderrun = 0; % Initialize count for underruns
 % Store data bits for BER calculations
 txParam.txDataBits = trBlk;
 [txOut,txGrid,txDiagnostics] = helperOFDMTx(txParam,sysParam,txObj);
+
+% --- Save TX reference data for ML training ---
+% tx_reference.mat is the ground-truth label file paired with RX captures.
+%   txGrid  : clean transmitted resource grid (numSubCar x numSymPerFrame complex)
+%             This is the ideal, noise-free version of RawGrid from the RX.
+%   trBlk   : known transmitted bit sequence (1 x trBlkSize)
+%             This is the ground-truth label for RawBits from the RX.
+%   sysParam: system parameters used for this transmission
+txRefDir  = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'captures');
+if ~exist(txRefDir, 'dir'), mkdir(txRefDir); end
+txRefTimestamp = datestr(now, 'yyyy-mm-dd_HH-MM-SS');
+txRefFile = fullfile(txRefDir, sprintf('tx_reference_%s.mat', txRefTimestamp));
+save(txRefFile, 'txGrid', 'trBlk', 'sysParam');
+% Also save a fixed-name version for quick pairing with OFDM_Demodulated_Data.mat
+save(fullfile(txRefDir, '..', 'tx_reference.mat'), 'txGrid', 'trBlk', 'sysParam');
+fprintf('TX reference saved: %s\n', txRefFile);
 
 % Display the grid if verbosity flag is enabled
 if dataParams.verbosity

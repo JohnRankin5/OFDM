@@ -17,17 +17,21 @@ OFDMParams.channelBW              = 3e6;   % Channel bandwidth (Hz)
 
 %% Modulation & Coding  (must be identical on TX and RX)
 dataParams.modOrder       = 4;     % 4=QPSK | 16=16QAM | 64=64QAM | 256=256QAM
-dataParams.coderate       = "1/2"; % '1/2' | '2/3' | '3/4' | '5/6'
-dataParams.numSymPerFrame =10;    % OFDM symbols per frame (must be >= 4; do not change unless redesigning the frame)
+dataParams.coderate       = '1/2'; % '1/2' | '2/3' | '3/4' | '5/6'
+dataParams.numSymPerFrame = 25;    % OFDM symbols per frame (must be >= 4; do not change unless redesigning the frame)
 
 %% RF  (must be identical on TX and RX)
 centerFrequency = 9.15e8;          % Center frequency in Hz (915 MHz)
+
+%% Frame Counts
+txNumFrames = 10000;   % TX: how many times to loop/broadcast the waveform
+rxNumFrames = 10;    % RX: how many frames to capture and save
 
 %% TX Payload
 % Message to transmit. Capacity = (numSymPerFrame - 3) * 80 * 2 * 0.5 / 7 ASCII chars per frame.
 % With numSymPerFrame=25 → ~246 chars | With numSymPerFrame=10 → ~80 chars.
 % Shorter messages repeat to fill the frame; longer are truncated.
-dataParams.message = 'Testing Testing ';   % <--- Edit your custom message here
+dataParams.message = 'Testing 2';   % <--- Edit your custom message here
 
 % --- Alternatively: send raw random bytes or bits ---
 % Option A — Random printable ASCII characters (still decoded as text on RX):
