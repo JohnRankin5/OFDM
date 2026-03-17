@@ -149,30 +149,47 @@ end
 
 
 
-%After the signal is genearted, we need to transmit it over the radio:
+%After the signal is generated, we need to transmit it over the radio:
 
-for frameNum = 1:sysParam.numFrames+1
-    underrun = radio(txWaveform);
-    tunderrun = tunderrun + underrun;  %li Total underruns
+flagFile = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'rx_running.flag');
 
+if txWaitForRX
+    % --- MODE: run until RX finishes (flag file controlled) ---
+    frameNum = 0;
+    fprintf('txWaitForRX=true: TX broadcasts until RX finishes.\n');
+    fprintf('Safety cap: %d frames. Start OFDMR_Working.m now.\n', txNumFrames);
 
-    % ONLY update the display every 100 frames to prevent lag
-    if mod(frameNum, 100) == 0
-        % Get current time down to milliseconds
-        currTime = datetime('now', 'Format', 'HH:mm:ss.SSS');
-        
-        % Calculate progress percentage
-        progress = (frameNum / sysParam.numFrames) * 100;
-        
-        % Print the status line
-        fprintf('Time: %s | Frame: %d/%d (%.1f%%) | Total Underruns: %d\n', ...
-            string(currTime), frameNum, sysParam.numFrames, progress, tunderrun);
+    while frameNum < txNumFrames
+        frameNum  = frameNum + 1;
+        underrun  = radio(txWaveform);
+        tunderrun = tunderrun + underrun;
+
+        % Stop when RX flag disappears (skip first 10 to avoid false exit)
+        if frameNum > 10 && ~exist(flagFile, 'file')
+            fprintf('\nRX finished. TX stopping after frame %d.\n', frameNum);
+            break;
+        end
+
+        if mod(frameNum, 100) == 0
+            rxActive = exist(flagFile, 'file');
+            fprintf('Time: %s | Frame: %d | Underruns: %d | RX active: %s\n', ...
+                datestr(now,'HH:MM:SS'), frameNum, tunderrun, mat2str(logical(rxActive)));
+        end
     end
-    
 
+else
+    % --- MODE: fixed frame count ---
+    fprintf('txWaitForRX=false: TX broadcasts for %d frames.\n', txNumFrames);
+    for frameNum = 1:txNumFrames
+        underrun  = radio(txWaveform);
+        tunderrun = tunderrun + underrun;
 
-
-
+        if mod(frameNum, 100) == 0
+            progress = (frameNum / txNumFrames) * 100;
+            fprintf('Time: %s | Frame: %d/%d (%.1f%%) | Underruns: %d\n', ...
+                datestr(now,'HH:MM:SS'), frameNum, txNumFrames, progress, tunderrun);
+        end
+    end
 end
 
 
