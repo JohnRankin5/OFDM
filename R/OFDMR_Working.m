@@ -4,6 +4,11 @@
 % Edit config.m to keep TX and RX in sync.
 % =============================================================================
 
+% Reset persistent state from any previous run.
+% helperOFDMRx uses 'persistent camped' — if not cleared, every new run
+% inherits camped=true and decodes without re-syncing → BER = 0.5 every frame.
+clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
+
 % Load shared parameters
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
@@ -19,36 +24,64 @@ gain        = 10;                % Receiver gain (dB) — increase if signal is 
 [sysParam,txParam,transportBlk] = helperOFDMSetParamsSDR(OFDMParams,dataParams);
 sampleRate                       = sysParam.scs*sysParam.FFTLen;                % Sample rate of signal
 
-% --- YOUR ORIGINAL WORKING RADIO SETUP ---
-ofdmRx = helperGetRadioParams(sysParam,radioDevice,sampleRate,centerFrequency,gain);
-[radio,spectrumAnalyze,constDiag] = helperGetRadioRxObj(ofdmRx);
+if loopbackMode
+    % --- LOOPBACK MODE: generate TX waveform internally, no hardware needed ---
+    fprintf('=== LOOPBACK MODE === (loopbackMode=true in config.m)\n');
+    fprintf('SNR = %.0f dB | No PlutoSDR required.\n', loopbackSNR_dB);
+    % Add TX folder to path so helperOFDMTxInit / helperOFDMTx are accessible
+    addpath(fullfile(fileparts(mfilename('fullpath')), '..', 'T'));
+    txObjLB = helperOFDMTxInit(sysParam);  % takes sysParam (not txParam)
+    txParam.txDataBits = transportBlk;
+    [loopbackWaveform, txGridLB, ~] = helperOFDMTx(txParam, sysParam, txObjLB);
+    % Repeat to fill at least 32768 samples (same as radio SamplesPerFrame)
+    nRep = ceil(32768 / length(loopbackWaveform)) + 1;
+    loopbackWaveform = repmat(loopbackWaveform, nRep, 1);
+    radioLB = @() deal(loopbackWaveform(1:32768), 0, false);
+    radio = radioLB;
+    spectrumAnalyze = @(x) [];
+    constDiag       = @(h,d) [];
+    fprintf('Loopback waveform ready (%d samples).\n', length(loopbackWaveform));
 
-% 1. Define the Serial Number for the Receiver
-targetSerialRx = '1044739a470b0002ffff270027b37feec0'; 
-% 2. Find all connected Plutos
-radios = findPlutoRadio;
-rxRadioID = '';
-% 3. Loop through them to find the match
-for i = 1:length(radios)
-    if strcmp(radios(i).SerialNum, targetSerialRx)
-        rxRadioID = radios(i).RadioID; % Grab the correct 'usb:X' ID
-        break;
+    % Save tx_reference.mat so plot_ofdm_grid.m can load TX vs RX comparison
+    txGrid   = txGridLB;
+    txRefDir = fullfile(fileparts(mfilename('fullpath')), 'captures');
+    if ~exist(txRefDir, 'dir'), mkdir(txRefDir); end
+    save(fullfile(fileparts(mfilename('fullpath')), 'tx_reference.mat'), 'txGrid', 'transportBlk', 'sysParam');
+    txRefTS  = datestr(now, 'yyyy-mm-dd_HH-MM-SS');
+    save(fullfile(txRefDir, sprintf('tx_reference_%s.mat', txRefTS)), 'txGrid', 'transportBlk', 'sysParam');
+    fprintf('TX reference saved: R/tx_reference.mat\n');
+else
+    % --- HARDWARE MODE: connect to PlutoSDR ---
+    ofdmRx = helperGetRadioParams(sysParam,radioDevice,sampleRate,centerFrequency,gain);
+    [radio,spectrumAnalyze,constDiag] = helperGetRadioRxObj(ofdmRx);
+    
+    % 1. Define the Serial Number for the Receiver
+    targetSerialRx = '1044739a470b0002ffff270027b37feec0';
+    % 2. Find all connected Plutos
+    radios = findPlutoRadio;
+    rxRadioID = '';
+    % 3. Loop through them to find the match
+    for i = 1:length(radios)
+        if strcmp(radios(i).SerialNum, targetSerialRx)
+            rxRadioID = radios(i).RadioID;
+            break;
+        end
     end
+    % 4. Error check
+    if isempty(rxRadioID)
+        error('Receiver Pluto not found! Check connection.');
+    end
+    disp(['Receiver successfully connected to: ' rxRadioID]);
+    
+    % 5. Initialize the Receiver using the found ID
+    ofdmRx = sdrrx('Pluto', ...
+        'RadioID', rxRadioID, ...
+        'CenterFrequency', centerFrequency, ...
+        'BasebandSampleRate', sampleRate, ...
+        'SamplesPerFrame', 32768, ...
+        'OutputDataType', 'double', ...
+        'GainSource', 'AGC Fast Attack');
 end
-% 4. Error check: Did we find it?
-if isempty(rxRadioID)
-    error('Receiver Pluto not found! Check connection.');
-end
-disp(['Receiver successfully connected to: ' rxRadioID]);
-
-% 5. Initialize the Receiver using the found ID
-ofdmRx = sdrrx('Pluto', ...
-    'RadioID', rxRadioID, ... 
-    'CenterFrequency', centerFrequency, ...
-    'BasebandSampleRate', sampleRate, ...
-    'SamplesPerFrame', 32768, ...
-    'OutputDataType', 'double', ...
-    'GainSource', 'AGC Fast Attack');
 
 % Clear variables
 clear helperOFDMRx helperOFDMRxFrontEnd helperOFDMRxSearch helperOFDMFrequencyOffset;
@@ -87,11 +120,12 @@ demodulatedData = struct('Frame',{}, 'BER',{}, 'Message',{}, ...
     'SNR_dB',{}, 'Timestamp',{}, 'headerCRCPass',{}, 'dataCRCPass',{});
 dataIdx = 1;
 
-% --- Create flag file so TX knows to keep transmitting ---
-% OFDMT.m watches for this file and loops until it disappears.
-flagFile = fullfile(fileparts(mfilename('fullpath')), 'rx_running.flag');
-fid = fopen(flagFile, 'w'); fclose(fid);
-fprintf('Flag file created: TX will keep broadcasting until RX finishes.\n');
+% --- Flag file: signal TX to keep transmitting while RX is running ---
+if txWaitForRX
+    flagFile = fullfile(fileparts(mfilename('fullpath')), 'rx_running.flag');
+    fid = fopen(flagFile, 'w'); fclose(fid);
+    fprintf('Flag created: TX will broadcast until this RX session ends.\n');
+end
 
 fprintf('\nWaiting for signal (receiver will run indefinitely until signal is found)...\n');
 
@@ -103,7 +137,15 @@ while framesCaptured < dataParams.numFrames
     sysParam.frameNum = framesCaptured + 1;
     
     % Receive Data
-    [rxWaveform, ~, overflow] = radio();
+    if loopbackMode
+        % Loopback: add AWGN noise to the TX waveform each iteration
+        [rxWaveform, overflow, ~] = radio();
+        noisePwr   = 10^(-loopbackSNR_dB/10) * mean(abs(rxWaveform).^2);
+        rxWaveform = rxWaveform + sqrt(noisePwr/2)*(randn(size(rxWaveform))+1j*randn(size(rxWaveform)));
+        overflow   = false;
+    else
+        [rxWaveform, ~, overflow] = radio();
+    end
     toverflow = toverflow + overflow;
     
     % Only process if no overflow
@@ -238,19 +280,25 @@ end
 % Final Summary
 fprintf('======================================================================================\n');
 fprintf('Simulation complete!\n');
+validBER = BER(BER~=0);
+if isempty(validBER), avgBERDisplay = 0; else, avgBERDisplay = mean(validBER); end
 fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
-    dataParams.numFrames, framesSynced, mean(BER(BER~=0)));
-release(radio);
+    dataParams.numFrames, framesSynced, avgBERDisplay);
+if ~loopbackMode, release(radio); end
 
 % --- Save 1: Versioned timestamped file (never overwritten, safe archive) ---
 save(captureFilename, 'demodulatedData', 'sysParam');
 fprintf('Capture saved : %s\n', captureFilename);
 
 % --- Save 2: Fixed-name file for quick access by plot_ofdm_grid.m etc. ---
-% --- Delete flag file so TX knows to stop ---
-if exist(flagFile, 'file'), delete(flagFile); end
-fprintf('Flag file removed: TX will stop after its current frame.\n');
+latestFile = fullfile(fileparts(mfilename('fullpath')), 'OFDM_Demodulated_Data.mat');
 save(latestFile, 'demodulatedData', 'sysParam');
+
+% --- Remove flag file so TX knows to stop ---
+if txWaitForRX && exist(flagFile, 'file')
+    delete(flagFile);
+    fprintf('Flag removed: TX will stop after its current frame.\n');
+end
 
 % --- Save 3: JSON metadata sidecar (human-readable, Python/ML pipeline friendly) ---
 meta.captureTime       = captureTimestamp;
