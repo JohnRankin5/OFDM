@@ -156,6 +156,7 @@ flagFile = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'rx_running.fla
 if txWaitForRX
     % --- MODE: run until RX finishes (flag file controlled) ---
     frameNum = 0;
+    missingFlagCount = 0; % Ensure flag is really gone, not just temporarily locked
     fprintf('txWaitForRX=true: TX broadcasts until RX finishes.\n');
     fprintf('Safety cap: %d frames. Start OFDMR_Working.m now.\n', txNumFrames);
 
@@ -164,10 +165,17 @@ if txWaitForRX
         underrun  = radio(txWaveform);
         tunderrun = tunderrun + underrun;
 
-        % Stop when RX flag disappears (skip first 10 to avoid false exit)
-        if frameNum > 10 && ~exist(flagFile, 'file')
-            fprintf('\nRX finished. TX stopping after frame %d.\n', frameNum);
-            break;
+        % Robust flag check: require flag to be missing multiple times consecutively
+        if frameNum > 10
+            if ~exist(flagFile, 'file')
+                missingFlagCount = missingFlagCount + 1;
+                if missingFlagCount >= 5
+                    fprintf('\nRX finished. TX stopping after frame %d.\n', frameNum);
+                    break;
+                end
+            else
+                missingFlagCount = 0; % reset if flag reappears
+            end
         end
 
         if mod(frameNum, 100) == 0
