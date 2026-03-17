@@ -29,7 +29,11 @@ rxFiltered = rxObj.rxFilter(rxIn);
 
 % Enter signal into buffer and perform timing adjustment
 signalBuffer = [signalBuffer(frameLen+(1:frameLen)); rxFiltered; zeros(symLen*2,1)];
-timingAdvance = sysParam.timingAdvance;
-rxOut = signalBuffer(timingAdvance+(1:frameLen+2*symLen)); % output one frame plus the sync and ref symbol of the next frame
+    % Ensure timingAdvance doesn't cause a negative or zero index
+    timingAdvance = sysParam.timingAdvance;
+    if timingAdvance < 0
+        timingAdvance = 0;
+    end
+    rxOut = signalBuffer(timingAdvance+(1:frameLen+2*symLen)); % output one frame plus the sync and ref symbol of the next frame
 
 end
