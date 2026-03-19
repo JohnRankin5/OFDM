@@ -127,15 +127,24 @@ if dataParams.verbosity
     helperOFDMPlotResourceGrid(txGrid,sysParam);
 end
 
-% Repeat the data in a buffer for PLUTO radio to make sure there are less
-% underruns. The receiver decodes only one frame from where the first
-% synchroization signal is received
+% Repeat the data in a buffer for PLUTO radio to make sure there are NO
+% underruns. OS thread latency causes micro-gaps if we loop too tightly.
+% We dynamically size the TX burst to perfectly encompass the entire desired
+% RX capture period (plus a small warmup margin), eliminating all loop gaps.
 txOutSize = length(txOut);
-if contains(radioDevice,'PLUTO') && txOutSize < 48000
-    frameCnt = ceil(48000/txOutSize);
-    txWaveform = zeros(txOutSize*frameCnt,1);
-    for i = 1:frameCnt
-        txWaveform(txOutSize*(i-1)+1:i*txOutSize) = txOut;
+if contains(radioDevice,'PLUTO')
+    % rxNumFrames + 40 margin frames to account for connection setup
+    requiredFrames = dataParams.numFrames + 40;
+    
+    % If the required buffer exceeds 2M samples (safety limit for USB DMA), cap it
+    if (requiredFrames * txOutSize) > 2000000
+        requiredFrames = floor(2000000 / txOutSize);
+        fprintf('[WARNING] Requesting huge TX buffer. Capped at %d frames to prevent SDR crash.\n', requiredFrames);
+    end
+    
+    txWaveform = zeros(txOutSize * requiredFrames, 1);
+    for i = 1:requiredFrames
+        txWaveform(txOutSize*(i-1)+1 : i*txOutSize) = txOut;
     end
 else
     txWaveform = txOut;

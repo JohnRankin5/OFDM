@@ -14,6 +14,7 @@ ofdmRadioParams.CenterFrequency = centerFrequency;
 ofdmRadioParams.Gain            = gain;
 ofdmRadioParams.SampleRate      = sampleRate;                % Sample rate of transmitted signal
 ofdmRadioParams.NumFrames       = sysParams.numFrames;       % Number of frames for transmission/reception
+ofdmRadioParams.numSymPerFrame  = sysParams.numSymPerFrame;  % Used to dynamically compute hardware tracking buffers
 ofdmRadioParams.txWaveformSize  = sysParams.txWaveformSize;  % Size of the transmitted waveform
 ofdmRadioParams.modOrder        = sysParams.modOrder;
 if ~strcmpi(radioDevice,'PLUTO')
