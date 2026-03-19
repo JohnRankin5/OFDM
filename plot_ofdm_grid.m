@@ -83,8 +83,12 @@ rxGrid = selectedFrame.RawGrid;
 % ==========================================================================
 % FIGURE 1: TX vs RX Resource Grid Comparison
 % ==========================================================================
-figTitle = sprintf('Frame %d | BER=%.4f | SNR=%.1f dB | %s', ...
-    selectedFrame.Frame, selectedFrame.BER, selectedFrame.SNR_dB, selectedFrame.Timestamp);
+% Clean up newlines in message for title
+msgRaw = strrep(selectedFrame.Message, newline, ' ');
+if length(msgRaw) > 50, msgRaw = [msgRaw(1:47) '...']; end
+
+figTitle = sprintf('Frame %d | BER=%.4f | SNR=%.1f dB | Msg: "%s"', ...
+    selectedFrame.Frame, selectedFrame.BER, selectedFrame.SNR_dB, msgRaw);
 
 if hasTxRef
     figure('Name', ['TX vs RX Grid — ' figTitle], 'NumberTitle', 'off', 'Position', [50, 500, 1400, 400]);
@@ -159,9 +163,14 @@ else
     grid on; set(gca,'Layer','top');
 
     subplot(1, 2, 2);
-    complexPoints = rxGrid(:);
+    if isfield(selectedFrame, 'EqData') && ~isempty(selectedFrame.EqData)
+        complexPoints = selectedFrame.EqData(:);
+        title(sprintf('Post-EQ Constellation | SNR≈%.1f dB', selectedFrame.SNR_dB));
+    else
+        complexPoints = rxGrid(:);
+        title(sprintf('Pre-EQ Constellation | SNR≈%.1f dB', selectedFrame.SNR_dB));
+    end
     plot(real(complexPoints), imag(complexPoints), '.b', 'MarkerSize', 4);
-    title(sprintf('Pre-EQ Constellation | SNR≈%.1f dB', selectedFrame.SNR_dB));
     xlabel('In-Phase'); ylabel('Quadrature');
     axis([-2 2 -2 2]); grid on;
     hold on;
@@ -190,9 +199,14 @@ if hasTxRef
 
     % RX received constellation
     subplot(1, 3, 2);
-    rxPoints = rxGrid(:);
+    if isfield(selectedFrame, 'EqData') && ~isempty(selectedFrame.EqData)
+        rxPoints = selectedFrame.EqData(:);
+        title(sprintf('RX Constellation (Post-EQ) | SNR≈%.1f dB', selectedFrame.SNR_dB));
+    else
+        rxPoints = rxGrid(:);
+        title(sprintf('RX Constellation (Pre-EQ) | SNR≈%.1f dB', selectedFrame.SNR_dB));
+    end
     plot(real(rxPoints), imag(rxPoints), '.b', 'MarkerSize', 4);
-    title(sprintf('RX Constellation (Received) | SNR≈%.1f dB', selectedFrame.SNR_dB));
     xlabel('In-Phase'); ylabel('Quadrature');
     axis([-2 2 -2 2]); grid on;
     hold on;
@@ -213,6 +227,7 @@ if hasTxRef
         padLen = rows * cols - minLen;
         errMap = reshape([errBits; zeros(padLen,1)], cols, rows)';
         imagesc(errMap);
+        caxis([0 1]); % Force 0 to map to the first color (green), 1 to the second (red)
         colormap(gca, [0.15 0.6 0.15; 0.9 0.2 0.2]); % green=correct, red=error
         title(sprintf('Bit Error Map (%d errors / %d bits)', sum(errBits), minLen));
         xlabel('Bit Index (columns)'); ylabel('Bit Index (rows)');

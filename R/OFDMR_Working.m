@@ -234,6 +234,7 @@ while framesCaptured < dataParams.numFrames
                 demodulatedData(dataIdx).TxBits        = transportBlk(1:sysParam.trBlkSize).'; % known TX bits (ground truth)
                 demodulatedData(dataIdx).RawBits       = rxDataBits;                           % received decoded bits
                 demodulatedData(dataIdx).RawGrid       = rxDiagnostics.rawGrid;                % pre-EQ resource grid (ML input)
+                demodulatedData(dataIdx).EqData        = rxDiagnostics.rxConstellationData;    % post-EQ data constellation
                 demodulatedData(dataIdx).SNR_dB        = SNR_dB;
                 demodulatedData(dataIdx).Timestamp     = datestr(now,'yyyy-mm-dd HH:MM:SS.FFF');
                 demodulatedData(dataIdx).headerCRCPass = ~rxDiagnostics.headerCRCErrorFlag;
