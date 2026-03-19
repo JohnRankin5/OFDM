@@ -32,7 +32,7 @@ else
 end
 
 % 3. Select frame to visualize
-frameIndex = 5;
+frameIndex = 16;
 if frameIndex > length(demodulatedData)
     warning('frameIndex=%d exceeds available frames (%d). Using frame 1.', frameIndex, length(demodulatedData));
     frameIndex = 1;

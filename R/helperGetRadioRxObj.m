@@ -17,7 +17,9 @@ if strcmpi(ofdmRx.RadioDevice,'PLUTO')
     radio.GainSource = "Manual";
     radio.Gain = ofdmRx.Gain;
     radio.EnableBurstMode = true;
-    radio.NumFramesInBurst = ofdmRx.NumFrames+1;
+    % Hardcode 15 extra frames to the SDR hardware buffer so it doesn't 
+    % run empty while the CFO tracking loop consumes frames at the start.
+    radio.NumFramesInBurst = ofdmRx.NumFrames+15;
 else
     switch ofdmRx.RadioDevice
         case {'B200','B210'}
@@ -33,7 +35,7 @@ else
                 'OutputDataType',       'double',...
                 'ClockSource',          'Internal',...
                 'EnableBurstMode',      true,...
-                'NumFramesInBurst',     ofdmRx.NumFrames+1);
+                'NumFramesInBurst',     ofdmRx.NumFrames+15);
         case {'N300','N310','N320/N321','N200/N210/USRP2','X300','X310','X410','E320'}
             radio = comm.SDRuReceiver(...
                 'Platform',             ofdmRx.RadioDevice, ...
@@ -46,7 +48,7 @@ else
                 'OutputDataType',       'double', ...
                 'ChannelMapping',       1, ...
                 'EnableBurstMode',      true,...
-                'NumFramesInBurst',     ofdmRx.NumFrames+1);
+                'NumFramesInBurst',     ofdmRx.NumFrames+15);
     end
 end
 % To visualize the constellation plot of the OFDM demodulated signal, you create
