@@ -49,6 +49,7 @@ sysParam.rsIdx = 2;                     % Symbol 2 is the reference symbol
 sysParam.headerIdx = 3;                     % Symbol 3 is the header symbol
 
 % Simulation options
+sysParam.numFrames = dataParam.numFrames;
 sysParam.enableCFO = true;
 sysParam.enableCPE = true;
 sysParam.enableScopes = dataParam.enableScopes;
