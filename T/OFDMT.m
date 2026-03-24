@@ -136,10 +136,11 @@ if contains(radioDevice,'PLUTO')
     % rxNumFrames + 40 margin frames to account for connection setup
     requiredFrames = dataParams.numFrames + 40;
     
-    % If the required buffer exceeds 2M samples (safety limit for USB DMA), cap it
-    if (requiredFrames * txOutSize) > 2000000
-        requiredFrames = floor(2000000 / txOutSize);
-        fprintf('[WARNING] Requesting huge TX buffer. Capped at %d frames to prevent SDR crash.\n', requiredFrames);
+    % If the required buffer exceeds the safe Pluto DMA limit (e.g. 160k samples), cap it
+    % Since our RX Auto-Recovery automatically jumps over TX loop-gaps flawlessly, 
+    % we don't need the TX buffer to hold the entire simulation at once!
+    if (requiredFrames * txOutSize) > 160000
+        requiredFrames = floor(160000 / txOutSize);
     end
     
     txWaveform = zeros(txOutSize * requiredFrames, 1);
@@ -187,10 +188,11 @@ if txWaitForRX
             end
         end
 
-        if mod(frameNum, 100) == 0
+        if mod(frameNum, 10) == 0
             rxActive = exist(flagFile, 'file');
-            fprintf('Time: %s | Frame: %d | Underruns: %d | RX active: %s\n', ...
-                datestr(now,'HH:MM:SS'), frameNum, tunderrun, mat2str(logical(rxActive)));
+            physicalFramesSent = frameNum * requiredFrames;
+            fprintf('Time: %s | Physical OFDM Frames Sent: %d | Underruns: %d | RX active: %s\n', ...
+                datestr(now,'HH:MM:SS'), physicalFramesSent, tunderrun, mat2str(logical(rxActive)));
         end
     end
 

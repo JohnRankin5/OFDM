@@ -1,0 +1,14 @@
+# MATLAB Auto-Saves
+*.asv
+
+# OFDM Captured & Demodulated Data
+R/captures/
+R/OFDM_Demodulated_Data.mat
+R/OFDM_Demodulated_Data_metadata.json
+
+# Transmitter Reference Grids
+T/tx_reference.mat
+T/tx_reference_metadata.json
+
+# Inter-process Communication Flags
+*.flag

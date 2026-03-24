@@ -30,10 +30,9 @@ if loopbackMode
     txObjLB = helperOFDMTxInit(sysParam);  % takes sysParam (not txParam)
     txParam.txDataBits = transportBlk;
     [loopbackWaveform, txGridLB, ~] = helperOFDMTx(txParam, sysParam, txObjLB);
-    % Repeat to fill at least 32768 samples (same as radio SamplesPerFrame)
-    nRep = ceil(32768 / length(loopbackWaveform)) + 1;
-    loopbackWaveform = repmat(loopbackWaveform, nRep, 1);
-    radioLB = @() deal(loopbackWaveform(1:32768), 0, false);
+    % Repeat to fill the correct block size
+    loopbackWaveform = repmat(loopbackWaveform, 1, 1); % Just pass 3200 samples
+    radioLB = @() deal(loopbackWaveform, 0, false);
     radio = radioLB;
     spectrumAnalyze = @(x) [];
     constDiag       = @(h,d) [];
@@ -126,58 +125,139 @@ end
 
 fprintf('\nWaiting for signal (receiver will run indefinitely until signal is found)...\n');
 
-% --- MAIN LOOP ---
-framesCaptured = 0;
-signalDetected = false;
+% --- TWO-STAGE ARCHITECTURE ---
+% Stage 1: Fast RAM Capture (Bypass USB bottlenecks)
+% Stage 2: Offline Decode & Auto-Recovery (Bypass hardware loop gaps)
 
-while framesCaptured < dataParams.numFrames
-    sysParam.frameNum = framesCaptured + 1;
-    
-    % Receive Data
+framesToCapture = dataParams.numFrames;
+% Pre-allocate an additional 150 frames to absorb hardware phase locks and gap re-locks
+allocatedFrames = framesToCapture + 150;
+totalSamples = allocatedFrames * sysParam.txWaveformSize;
+
+rawIQ = complex(zeros(totalSamples, 1));
+toverflow = 0;
+idx = 1;
+
+% --- WAIT FOR SIGNAL LOOP ---
+prevChunk = [];
+while true
     if loopbackMode
-        % Loopback: add AWGN noise to the TX waveform each iteration
-        [rxWaveform, overflow, ~] = radio();
-        noisePwr   = 10^(-loopbackSNR_dB/10) * mean(abs(rxWaveform).^2);
-        rxWaveform = rxWaveform + sqrt(noisePwr/2)*(randn(size(rxWaveform))+1j*randn(size(rxWaveform)));
-        overflow   = false;
+        [rxChunk, overflow, ~] = radio();
+        noisePwr = 10^(-loopbackSNR_dB/10) * mean(abs(rxChunk).^2);
+        rxChunk = rxChunk + sqrt(noisePwr/2)*(randn(size(rxChunk))+1j*randn(size(rxChunk)));
+        overflow = false;
     else
-        [rxWaveform, ~, overflow] = radio();
+        [rxChunk, ~, overflow] = radio();
     end
     toverflow = toverflow + overflow;
     
-    % Only process if no overflow
-    if ~overflow
-        rxIn = helperOFDMRxFrontEnd(rxWaveform,sysParam,rxObj);
-        [rxDataBits,isConnected,toff,rxDiagnostics] = helperOFDMRx(rxIn,sysParam,rxObj);
-        sysParam.timingAdvance = toff;
+    % If we have a previous chunk, overlap them to guarantee we don't mathematically split
+    % the Sync symbol across the boundary of the chunks, accelerating the trigger to instant!
+    if isempty(prevChunk)
+        searchChunk = rxChunk;
+    else
+        searchChunk = [prevChunk; rxChunk];
+    end
+    prevChunk = rxChunk;
+    
+    % Very fast heuristic: If we find a sync symbol, instantly trigger the massive RAM dump!
+    [~, ta, ~] = helperOFDMRxSearch(searchChunk, sysParam);
+    if cellfun(@(x) ~isempty(x), {ta}) || ~isempty(ta) % Robust check for any non-empty ta
+        fprintf('Signal detected! Instantly triggering High-Speed RAM Capture...\n');
         
-        % Detect signal for the first time
-        if isConnected && ~signalDetected
-            signalDetected = true;
-            fprintf('Signal detected! Starting capture of %d frames...\n', dataParams.numFrames);
-            
-            % Print the Fixed-Width Header
-            fprintf('======================================================================================\n');
-            fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
-            fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
-        end
+        % We MUST keep the trigger chunk because it contains our first frame!
+        len = length(searchChunk);
+        rawIQ(idx : idx+len-1) = searchChunk;
+        idx = idx + len;
+        break;
+    end
+end
+
+fprintf('[STAGE 1] Capturing %.1f Million samples straight to RAM...\n', totalSamples/1e6);
+
+% Grab the rest of the data as fast as physically possible
+while idx <= totalSamples
+    if loopbackMode
+        [rxChunk, overflow, ~] = radio();
+        noisePwr = 10^(-loopbackSNR_dB/10) * mean(abs(rxChunk).^2);
+        rxChunk = rxChunk + sqrt(noisePwr/2)*(randn(size(rxChunk))+1j*randn(size(rxChunk)));
+        overflow = false;
+    else
+        [rxChunk, ~, overflow] = radio();
+    end
+    toverflow = toverflow + overflow;
+    
+    len = length(rxChunk);
+    if (idx + len - 1) <= totalSamples
+        rawIQ(idx : idx+len-1) = rxChunk;
+    end
+    idx = idx + len;
+end
+fprintf('Capture Complete! (Overruns: %d)\n\n', toverflow);
+if ~loopbackMode
+    release(radio); % Free the hardware
+end
+
+fprintf('[STAGE 2] Offline Decoding %d frames...\n', framesToCapture);
+% Print the Fixed-Width Header
+fprintf('======================================================================================\n');
+fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
+fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
+
+framesCaptured = 0;
+signalDetected = false;
+chunkIdx = 1;
+consecutiveFails = 0;
+    
+while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 1) <= totalSamples
+    sysParam.frameNum = framesCaptured + 1;
+    
+    % Extract the next frame-sized chunk from our massive RAM array
+    rxWaveform = rawIQ(chunkIdx : chunkIdx + sysParam.txWaveformSize - 1);
+    chunkIdx = chunkIdx + sysParam.txWaveformSize;
+    
+    rxIn = helperOFDMRxFrontEnd(rxWaveform,sysParam,rxObj);
+    [rxDataBits,isConnected,toff,rxDiagnostics] = helperOFDMRx(rxIn,sysParam,rxObj);
+    if isempty(toff)
+        % Failed to find sync in this chunk
+    elseif toff > 0 && ~isConnected
+        % Found sync, but not camped yet
+    end
+    sysParam.timingAdvance = toff;
+    
+    if isConnected && ~signalDetected
+        signalDetected = true;
+    end
+    
+    % Evaluate connection and check for gap failures
+    if signalDetected
+        framesCaptured = framesCaptured + 1;
+        frameNum = framesCaptured;
         
-        % Only process and count loops if we have begun detection
-        if signalDetected
-            framesCaptured = framesCaptured + 1;
-            frameNum = framesCaptured;
+        if isConnected
+            % If the header CRC fails repeatedly, we likely crossed a TX loop gap!
+            if rxDiagnostics.headerCRCErrorFlag
+                consecutiveFails = consecutiveFails + 1;
+            else
+                consecutiveFails = 0;
+            end
             
-            % --- IF SIGNAL IS LOCKED ---
-            if isConnected
-                framesSynced = framesSynced + 1;
-                
-                % Per-frame BER: directly compare this frame's bits (not cumulative)
-                numErrors   = sum(xor(transportBlk(1:sysParam.trBlkSize).', rxDataBits));
-                currentBER  = numErrors / sysParam.trBlkSize;
-                BER(frameNum) = currentBER;
-                
-                % Also feed into comm.ErrorRate for the overall session average (final summary only)
-                errorRate(transportBlk((1:sysParam.trBlkSize)).', rxDataBits);
+            % --- AUTO RECOVERY ---
+            % If we fail 3 frames in a row, the radio timing phase shifted.
+            if consecutiveFails >= 3
+                fprintf('|  %02.0f%%     | [GAP FIX]   |   -----   |   -----   | Re-calibrating phase lock...\n', (framesCaptured/framesToCapture)*100);
+                clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
+                signalDetected = false;
+                isConnected = false;
+                consecutiveFails = 0;
+                % Rewind the chunk index slightly to catch the sync symbol for the new gap block
+                chunkIdx = max(1, chunkIdx - (5 * sysParam.txWaveformSize));
+                continue;
+            end
+            
+            framesSynced = framesSynced + 1;
+            numErrors   = sum(xor(transportBlk(1:sysParam.trBlkSize).', rxDataBits));
+            BER(frameNum) = numErrors / sysParam.trBlkSize;
 
                 % --- PLOT RAW POST-DEMODULATION DATA ---
                 if dataParams.enableScopes
@@ -273,7 +353,6 @@ while framesCaptured < dataParams.numFrames
             end
         end
     end
-end
 
 % Final Summary
 fprintf('======================================================================================\n');
