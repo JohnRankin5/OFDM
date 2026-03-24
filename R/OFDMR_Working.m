@@ -149,11 +149,7 @@ idx = 1;
 % at startup that look like garbage to the sync correlator, delaying detection by seconds.
 fprintf('SDR warming up (draining AGC noise)...\n');
 for warmup = 1:8
-    if loopbackMode
-        radio(); % drain
-    else
-        radio(); % drain
-    end
+    radio(); % drain AGC transient (same call for both loopback and hardware)
 end
 fprintf('SDR ready. Searching for signal...\n');
 
@@ -243,12 +239,11 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
     
     rxIn = helperOFDMRxFrontEnd(rxWaveform,sysParam,rxObj);
     [rxDataBits,isConnected,toff,rxDiagnostics] = helperOFDMRx(rxIn,sysParam,rxObj);
-    if isempty(toff)
-        % Failed to find sync in this chunk
-    elseif toff > 0 && ~isConnected
-        % Found sync, but not camped yet
+    % Only update timingAdvance when toff is a valid scalar — assigning
+    % an empty [] would crash helperOFDMRxFrontEnd on the next iteration.
+    if ~isempty(toff)
+        sysParam.timingAdvance = toff;
     end
-    sysParam.timingAdvance = toff;
     
     if isConnected && ~signalDetected
         signalDetected = true;
@@ -339,7 +334,7 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
 
                 % Store demodulated information for export
                 demodulatedData(dataIdx).Frame         = frameNum;
-                demodulatedData(dataIdx).BER           = currentBER;
+                demodulatedData(dataIdx).BER           = BER(frameNum); % actual per-frame BER, not the stale display variable
                 demodulatedData(dataIdx).Message       = lastMessage;
                 demodulatedData(dataIdx).TxBits        = transportBlk(1:sysParam.trBlkSize).'; % known TX bits (ground truth)
                 demodulatedData(dataIdx).RawBits       = rxDataBits;                           % received decoded bits
@@ -394,7 +389,7 @@ validBER = BER(BER~=0);
 if isempty(validBER), avgBERDisplay = 0; else, avgBERDisplay = mean(validBER); end
 fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
     dataParams.numFrames, framesSynced, avgBERDisplay);
-if ~loopbackMode, release(radio); end
+% (radio already released after Stage 1 capture — no second release needed)
 
 % --- Save 1: Versioned timestamped file (never overwritten, safe archive) ---
 save(captureFilename, 'demodulatedData', 'sysParam');
