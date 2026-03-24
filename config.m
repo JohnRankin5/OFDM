@@ -25,7 +25,7 @@ centerFrequency = 9.15e8;          % Center frequency in Hz (915 MHz)
 
 %% Frame Counts
 txNumFrames  = 10000; % TX: safety cap on max frames (used only if txWaitForRX=false)
-rxNumFrames  = 5000;    % RX: how many valid payload data frames to capture and save
+rxNumFrames  = 10000; % RX: how many valid payload data frames to capture and save
 
 % Set true  = TX runs until RX finishes (recommended — no timing guesswork)
 % Set false = TX runs for exactly txNumFrames then stops regardless of RX
@@ -47,7 +47,7 @@ loopbackSNR_dB = 25;      % AWGN noise level in loopback (dB). Higher = cleaner 
 % Message to transmit. Capacity = (numSymPerFrame - 3) * 80 * 2 * 0.5 / 7 ASCII chars per frame.
 % With numSymPerFrame=25 → ~246 chars | With numSymPerFrame=10 → ~80 chars.
 % Shorter messages repeat to fill the frame; longer are truncated.
-dataParams.message = 'Testing100frames ';   % <--- Edit your custom message here
+dataParams.message = 'OFDM Transceiver V2: By bypassing physical DMA burst limits, the Two-Stage stream algorithm guarantees infinite stable transmission. Auto-Recovery 100% Active. | ';
 
 % --- Alternatively: send raw random bytes or bits ---
 % Option A — Random printable ASCII characters (still decoded as text on RX):

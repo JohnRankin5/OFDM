@@ -5,9 +5,7 @@
 % =============================================================================
 
 % Reset persistent state from any previous run.
-% helperOFDMRx uses 'persistent camped' — if not cleared, every new run
-% inherits camped=true and decodes without re-syncing → BER = 0.5 every frame.
-clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
+close all; clear; clc;
 
 % Load shared parameters
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
@@ -118,7 +116,9 @@ dataIdx = 1;
 
 % --- Flag file: signal TX to keep transmitting while RX is running ---
 if txWaitForRX
-    flagFile = fullfile(fileparts(mfilename('fullpath')), 'rx_running.flag');
+    % Normalize the root path natively without using relative strings
+    rootDir = fileparts(fileparts(mfilename('fullpath')));
+    flagFile = fullfile(rootDir, 'rx_running.flag');
     fid = fopen(flagFile, 'w'); fclose(fid);
     fprintf('Flag created: TX will broadcast until this RX session ends.\n');
 end
@@ -134,9 +134,28 @@ framesToCapture = dataParams.numFrames;
 allocatedFrames = framesToCapture + 150;
 totalSamples = allocatedFrames * sysParam.txWaveformSize;
 
-rawIQ = complex(zeros(totalSamples, 1));
+% Clear previous run's heavyweight variables so MATLAB doesn't hold
+% two copies of the array simultaneously → prevents OOM on re-run.
+clear rawIQ demodulatedData;
+% Use single precision: Pluto SDR is 12-bit ADC so single (8 bytes/sample)
+% retains full hardware fidelity at exactly HALF the RAM cost of double (16 bytes).
+% 10,150 frames × 4,000 samples × 8 bytes = ~325 MB instead of 650 MB.
+rawIQ = complex(zeros(totalSamples, 1, 'single'));
 toverflow = 0;
 idx = 1;
+
+% --- SDR AGC WARMUP: drain a few chunks to let the Pluto's analog gain stabilize ---
+% Without this, the auto-gain circuitry produces noisy transitional samples
+% at startup that look like garbage to the sync correlator, delaying detection by seconds.
+fprintf('SDR warming up (draining AGC noise)...\n');
+for warmup = 1:8
+    if loopbackMode
+        radio(); % drain
+    else
+        radio(); % drain
+    end
+end
+fprintf('SDR ready. Searching for signal...\n');
 
 % --- WAIT FOR SIGNAL LOOP ---
 prevChunk = [];
@@ -198,6 +217,12 @@ if ~loopbackMode
     release(radio); % Free the hardware
 end
 
+% --- All IQ data is in RAM. TX is no longer needed. Shut it down NOW. ---
+if txWaitForRX && exist(flagFile, 'file')
+    delete(flagFile);
+    fprintf('Stage 1 complete: Flag removed. TX will stop after its current frame.\n');
+end
+
 fprintf('[STAGE 2] Offline Decoding %d frames...\n', framesToCapture);
 % Print the Fixed-Width Header
 fprintf('======================================================================================\n');
@@ -212,7 +237,7 @@ consecutiveFails = 0;
 while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 1) <= totalSamples
     sysParam.frameNum = framesCaptured + 1;
     
-    % Extract the next frame-sized chunk from our massive RAM array
+    % Extract the next frame-sized chunk from the RAM array.
     rxWaveform = rawIQ(chunkIdx : chunkIdx + sysParam.txWaveformSize - 1);
     chunkIdx = chunkIdx + sysParam.txWaveformSize;
     
@@ -243,15 +268,23 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
             end
             
             % --- AUTO RECOVERY ---
-            % If we fail 3 frames in a row, the radio timing phase shifted.
+            % Diagnostic confirmed: BER=0 but CRC=0 after TX loop gap.
+            % The decoder is mathematically correct but the header framing
+            % drifted by the loop-boundary glitch. Fix: only un-camp the
+            % sync search — preserve the rolling signalBuffer so the
+            % filter state stays valid. Do NOT skip frames.
             if consecutiveFails >= 3
                 fprintf('|  %02.0f%%     | [GAP FIX]   |   -----   |   -----   | Re-calibrating phase lock...\n', (framesCaptured/framesToCapture)*100);
-                clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
+                % Only clear the sync/camp/channel functions.
+                % helperOFDMRxFrontEnd is intentionally NOT cleared — its
+                % persistent signalBuffer contains live IQ data and must
+                % keep rolling to avoid decoding from a zero-padded buffer.
+                clear helperOFDMRx helperOFDMRxSearch helperOFDMChannelEstimation;
                 signalDetected = false;
                 isConnected = false;
                 consecutiveFails = 0;
-                % Rewind the chunk index slightly to catch the sync symbol for the new gap block
-                chunkIdx = max(1, chunkIdx - (5 * sysParam.txWaveformSize));
+                sysParam.timingAdvance = 0; % Reset timing so FrontEnd outputs from buffer start
+                % NO frame skip — let the natural scan find the next real sync.
                 continue;
             end
             

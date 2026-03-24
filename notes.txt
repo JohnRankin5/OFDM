@@ -19,3 +19,6 @@ demodulatedData = struct('Frame', {}, 'BER', {}, 'Message', {}, 'RawBits', {}, '
    - Rows (80): Active subcarriers (70 data + 10 pilots).
    - Columns (24): Consecutive OFDM symbols over time (10ms).
    - Values: Complex IQ points representing mapped QAM/QPSK symbols.
+
+
+

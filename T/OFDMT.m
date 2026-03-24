@@ -5,6 +5,7 @@
 % =============================================================================
 
 % Load shared parameters
+close all; clear; clc;
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
 % TX-specific parameters
@@ -136,11 +137,14 @@ if contains(radioDevice,'PLUTO')
     % rxNumFrames + 40 margin frames to account for connection setup
     requiredFrames = dataParams.numFrames + 40;
     
-    % If the required buffer exceeds the safe Pluto DMA limit (e.g. 160k samples), cap it
-    % Since our RX Auto-Recovery automatically jumps over TX loop-gaps flawlessly, 
-    % we don't need the TX buffer to hold the entire simulation at once!
-    if (requiredFrames * txOutSize) > 160000
-        requiredFrames = floor(160000 / txOutSize);
+    % Cap at 4M samples (~1000 frames) for TX streaming mode.
+    % NOTE: The original 160k limit was for RX burst mode — the TX uses continuous
+    % streaming which has a much higher safe buffer ceiling on Pluto SDR.
+    % A 40-frame (160k) buffer caused a USB gap every 40 frames (~every 0.16s),
+    % making the GAP FIX trigger nearly continuously and consuming all recovery budget.
+    % At 1000 frames (4M samples), gaps appear only ~10 times per 10k-frame session.
+    if (requiredFrames * txOutSize) > 4000000
+        requiredFrames = floor(4000000 / txOutSize);
     end
     
     txWaveform = zeros(txOutSize * requiredFrames, 1);
@@ -159,12 +163,20 @@ end
 
 
 
-%After the signal is generated, we need to transmit it over the radio:
-
-flagFile = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'rx_running.flag');
+% Normalize the absolute root directory without using relative '..' strings
+rootDir = fileparts(fileparts(mfilename('fullpath')));
+flagFile = fullfile(rootDir, 'rx_running.flag');
 
 if txWaitForRX
     % --- MODE: run until RX finishes (flag file controlled) ---
+    fprintf('txWaitForRX=true: TX waiting for RX to initialize...\n');
+    while ~exist(flagFile, 'file')
+        pause(0.5);
+    end
+    fprintf('RX Flag detected! Sparing 2.0 seconds for SDR boot sequence...\n');
+    pause(2.0);
+    fprintf('TX is now continuously broadcasting signal.\n');
+    
     frameNum = 0;
     missingFlagCount = 0; % Ensure flag is really gone, not just temporarily locked
     fprintf('txWaitForRX=true: TX broadcasts until RX finishes.\n');
@@ -180,7 +192,7 @@ if txWaitForRX
             if ~exist(flagFile, 'file')
                 missingFlagCount = missingFlagCount + 1;
                 if missingFlagCount >= 5
-                    fprintf('\nRX finished. TX stopping after frame %d.\n', frameNum);
+                    fprintf('\nRX finished. TX stopping after %d physical frames sent.\n', frameNum * requiredFrames);
                     break;
                 end
             else
