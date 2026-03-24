@@ -25,11 +25,16 @@ centerFrequency = 9.15e8;          % Center frequency in Hz (915 MHz)
 
 %% Frame Counts
 txNumFrames  = 10000; % TX: safety cap on max frames (used only if txWaitForRX=false)
-rxNumFrames  = 240;    % RX: how many valid payload data frames to capture and save
+rxNumFrames  = 100;    % RX: how many valid payload data frames to capture and save
 
 % Set true  = TX runs until RX finishes (recommended — no timing guesswork)
 % Set false = TX runs for exactly txNumFrames then stops regardless of RX
 txWaitForRX = true;
+
+%% Display & Logging
+dataParams.enableScopes = false; % Set to false to disable live plotting and speed up captures
+dataParams.printData    = false;  % Set to false to hide decoded message strings in the console
+dataParams.verbosity    = false; % Verbose debug output
 
 %% Debug / Loopback Mode
 % Set loopbackMode = true to test the full RX pipeline WITHOUT hardware.
@@ -42,7 +47,7 @@ loopbackSNR_dB = 25;      % AWGN noise level in loopback (dB). Higher = cleaner 
 % Message to transmit. Capacity = (numSymPerFrame - 3) * 80 * 2 * 0.5 / 7 ASCII chars per frame.
 % With numSymPerFrame=25 → ~246 chars | With numSymPerFrame=10 → ~80 chars.
 % Shorter messages repeat to fill the frame; longer are truncated.
-dataParams.message = 'Testing123123323 ';   % <--- Edit your custom message here
+dataParams.message = 'Testing100frames ';   % <--- Edit your custom message here
 
 % --- Alternatively: send raw random bytes or bits ---
 % Option A — Random printable ASCII characters (still decoded as text on RX):

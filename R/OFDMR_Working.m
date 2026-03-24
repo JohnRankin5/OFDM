@@ -14,9 +14,6 @@ run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
 % RX-specific parameters
 dataParams.numFrames    = rxNumFrames; % Set in config.m → rxNumFrames
-dataParams.enableScopes = true;  % Show spectrum/constellation scopes
-dataParams.verbosity    = false; % Verbose debug output
-dataParams.printData    = true;  % Print decoded message to console
 radioDevice = 'PLUTO';           % SDR device type
 gain        = 10;                % Receiver gain (dB) — increase if signal is weak
 
