@@ -210,6 +210,9 @@ if headerCRCErrFlag
     end
     dataCRCErrFlag = 1;
     decodedDataBits = zeros(sysParam.trBlkSize,1);
+    % Safe defaults so diagnostics struct can always be constructed
+    dataConstData = zeros(size(userData));
+    softLLRs      = zeros(sysParam.trBlkSize * 2, 1); % approx size
 else
     if verbosity > 0
         fprintf('Header CRC passed\n');
@@ -257,7 +260,6 @@ end
 
 rxDataBits = double(decodedDataBits); % convert from logical type to double
 
-% Assign output parameters
 % Assign output parameters
 diagnostics = struct( ...
     'estCFO',freqOffset,...

@@ -131,9 +131,9 @@ captureFilename  = fullfile(captureDir, sprintf('capture_%s.mat', captureTimesta
 %   Timestamp     - wall-clock time this frame was decoded
 %   headerCRCPass - true if header CRC check passed
 %   dataCRCPass   - true if data CRC check passed
-demodulatedData = struct('Frame',{}, 'BER',{}, 'Message',{}, ...
-    'TxBits',{}, 'RawBits',{}, 'RawGrid',{}, ...
-    'SNR_dB',{}, 'Timestamp',{}, 'headerCRCPass',{}, 'dataCRCPass',{});
+demodulatedData = struct('Frame',{}, 'TxBits',{}, 'TxGrid',{}, ...
+    'RxBits',{}, 'RxGrid',{}, 'TxRxCompare',{}, 'EqData',{}, ...
+    'BER',{}, 'SNR_dB',{}, 'MappedTxFrame',{}, 'FrameSeqID',{}, 'Timestamp',{});
 dataIdx = 1;
 
 % --- Flag file: signal TX to keep transmitting while RX is running ---
@@ -234,7 +234,14 @@ while idx <= totalSamples
 end
 fprintf('Capture Complete! (Overruns: %d)\n\n', toverflow);
 if ~loopbackMode
-    release(radio); % Free the hardware
+    release(radio); % Free the hardware so TX can immediately reuse it
+end
+
+% --- DEPLOY KILL FLAG: let TX stop as soon as all IQ data is in RAM ---
+% Stage 2 (demodulation) is pure CPU work — TX hardware is no longer needed.
+if txWaitForRX && exist(flagFile, 'file')
+    delete(flagFile);
+    fprintf('TX kill flag deployed. Transmitter shutting down (hardware free).\n');
 end
 
 % --- All physical IQ data is successfully housed in RAM array. ---
@@ -245,16 +252,14 @@ fprintf('=======================================================================
 fprintf('| Progress |   Status    |    BER    | Underruns |    Global Frame Match  \n');
 fprintf('|----------|-------------|-----------|-----------|------------------------\n');
 
-framesCaptured = 0;
-signalDetected = false;
-chunkIdx = 1;
-consecutiveFails = 0;
-lastSeqIdx = -1;
-globalSeqIdx = 0;
-
-% Real-World Pure Payload Sync
-isSynced = false;
-globalSeqIdx = 1;
+% Sync tracking
+framesCaptured     = 0;
+signalDetected     = false;
+chunkIdx           = 1;
+consecutiveFails   = 0;
+lastSeqIdx         = -1;
+isSynced           = false;
+globalSeqIdx       = 1;
 consecutiveHighBER = 0;  % Tracks consecutive bad frames for auto re-lock
     
 while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 1) <= totalSamples
@@ -455,7 +460,13 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                 demodulatedData(dataIdx).EqData        = rxDiagnostics.rxConstellationData;    % Post-equalization constellation
                 demodulatedData(dataIdx).BER           = currentBER;                           % Per-frame bit error rate
                 demodulatedData(dataIdx).SNR_dB        = SNR_dB;
-                demodulatedData(dataIdx).MappedTxFrame = mappedIndex;                          % Which TX frame this was matched to
+                demodulatedData(dataIdx).MappedTxFrame = mappedIndex;
+                % Only store the seq ID when the header CRC passed — otherwise it is garbage
+                if headerOK
+                    demodulatedData(dataIdx).FrameSeqID = rxDiagnostics.frameSeqNum;
+                else
+                    demodulatedData(dataIdx).FrameSeqID = -1;
+                end
                 demodulatedData(dataIdx).Timestamp     = datestr(now,'yyyy-mm-dd HH:MM:SS.FFF');
                 dataIdx = dataIdx + 1; 
                 
@@ -489,12 +500,6 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
             end
         end
     end
-
-% --- STOP TRANSMITTER ---
-if txWaitForRX && exist(flagFile, 'file')
-    delete(flagFile);
-    fprintf('\nTX kill flag deployed. Transmitter will shut down in background.\n');
-end
 
 % Final Summary
 fprintf('========================================================================\n');
