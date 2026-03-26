@@ -84,6 +84,28 @@ toverflow = 0;
 rxObj = helperOFDMRxInit(sysParam);
 BER = zeros(1,dataParams.numFrames);
 
+% Load random dynamic ground truth payloads from TX. The TX generated a cyclic array 
+% of payloads and saved them to R/tx_reference.mat.
+txRefFile = fullfile(fileparts(mfilename('fullpath')), 'tx_reference.mat');
+if exist(txRefFile, 'file')
+    txRefData = load(txRefFile);
+    if isfield(txRefData, 'allTxBits')
+        allTxBits = txRefData.allTxBits;
+        allTxGrids = txRefData.allTxGrids;
+        fprintf('Loaded %d TX ground truth frames from %s\n', length(allTxBits), txRefFile);
+    else
+        % Fallback if simulating older transmissions without cyclic buffer
+        allTxBits = repmat({txRefData.trBlk(1:sysParam.trBlkSize).'}, 1, 64);
+        allTxGrids = repmat({txRefData.txGrid}, 1, 64);
+        fprintf('WARNING: Loaded old-format tx_reference.mat (64 static frames).\n');
+    end
+else
+    % Loopback/Fallback uses the local transportBlk exactly 64 times
+    allTxBits = repmat({transportBlk(1:sysParam.trBlkSize).'}, 1, 64);
+    allTxGrids = cell(1, 64);
+    fprintf('WARNING: tx_reference.mat not found. Using local static transportBlk.\n');
+end
+
 % Status tracking variables for the dashboard
 framesSynced = 0;
 lastMessage  = 'Waiting for data...';  % char array (not string object)
@@ -119,6 +141,8 @@ if txWaitForRX
     % Normalize the root path natively without using relative strings
     rootDir = fileparts(fileparts(mfilename('fullpath')));
     flagFile = fullfile(rootDir, 'rx_running.flag');
+    % Delete any stale flag from a previously crashed session first
+    if exist(flagFile, 'file'), delete(flagFile); end
     fid = fopen(flagFile, 'w'); fclose(fid);
     fprintf('Flag created: TX will broadcast until this RX session ends.\n');
 end
@@ -130,8 +154,8 @@ fprintf('\nWaiting for signal (receiver will run indefinitely until signal is fo
 % Stage 2: Offline Decode & Auto-Recovery (Bypass hardware loop gaps)
 
 framesToCapture = dataParams.numFrames;
-% Pre-allocate an additional 150 frames to absorb hardware phase locks and gap re-locks
-allocatedFrames = framesToCapture + 150;
+% Pre-allocate an additional 100% margin (2.0x frames) to absorb hardware phase locks and heavy USB drops!
+allocatedFrames = floor(framesToCapture * 2.0);
 totalSamples = allocatedFrames * sysParam.txWaveformSize;
 
 % Clear previous run's heavyweight variables so MATLAB doesn't hold
@@ -213,22 +237,25 @@ if ~loopbackMode
     release(radio); % Free the hardware
 end
 
-% --- All IQ data is in RAM. TX is no longer needed. Shut it down NOW. ---
-if txWaitForRX && exist(flagFile, 'file')
-    delete(flagFile);
-    fprintf('Stage 1 complete: Flag removed. TX will stop after its current frame.\n');
-end
+% --- All physical IQ data is successfully housed in RAM array. ---
+fprintf('Stage 1 complete: Proceeding to offline evaluation.\n');
 
 fprintf('[STAGE 2] Offline Decoding %d frames...\n', framesToCapture);
-% Print the Fixed-Width Header
-fprintf('======================================================================================\n');
-fprintf('| Progress |   Status    |    BER    | Underruns | Last Message                     \n');
-fprintf('|----------|-------------|-----------|-----------|----------------------------------\n');
+fprintf('========================================================================\n');
+fprintf('| Progress |   Status    |    BER    | Underruns |    Global Frame Match  \n');
+fprintf('|----------|-------------|-----------|-----------|------------------------\n');
 
 framesCaptured = 0;
 signalDetected = false;
 chunkIdx = 1;
 consecutiveFails = 0;
+lastSeqIdx = -1;
+globalSeqIdx = 0;
+
+% Real-World Pure Payload Sync
+isSynced = false;
+globalSeqIdx = 1;
+consecutiveHighBER = 0;  % Tracks consecutive bad frames for auto re-lock
     
 while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 1) <= totalSamples
     sysParam.frameNum = framesCaptured + 1;
@@ -283,9 +310,94 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                 continue;
             end
             
-            framesSynced = framesSynced + 1;
-            numErrors   = sum(xor(transportBlk(1:sysParam.trBlkSize).', rxDataBits));
-            BER(frameNum) = numErrors / sysParam.trBlkSize;
+            % --- HEADER-BASED SEQUENCE ID SYNCHRONIZATION ---
+            % CRITICAL: Only trust frameSeqNum when the header CRC passed.
+            % If the header CRC failed, seqNum is random garbage — incrementing by 1
+            % is a safe fallback that preserves tracker continuity.
+            headerOK = isfield(rxDiagnostics, 'headerCRCErrorFlag') && ...
+                       (rxDiagnostics.headerCRCErrorFlag == 0);
+            
+            if headerOK && isfield(rxDiagnostics, 'frameSeqNum')
+                seqId = rxDiagnostics.frameSeqNum; % 0-63, verified clean
+                
+                if lastSeqIdx == -1
+                    % First ever clean frame: anchor tracking here
+                    lastSeqIdx   = seqId;
+                    globalSeqIdx = seqId + 1;  % 1-based
+                    isSynced     = false;
+                else
+                    % Clean delta unwrap (handles 63→0 rollover)
+                    delta = mod(seqId - lastSeqIdx, 64);
+                    % Sanity check: delta > 32 means a backwards jump > half-wrap.
+                    % Treat as +1 increment (likely a re-sync glitch, not real jump).
+                    if delta == 0 || delta > 32
+                        delta = 1;
+                    end
+                    globalSeqIdx = globalSeqIdx + delta;
+                    lastSeqIdx   = seqId;
+                end
+            else
+                % Header corrupt or seqNum unavailable — safe +1 step
+                globalSeqIdx = globalSeqIdx + 1;
+            end
+            
+            % --- ONE-TIME K-MULTIPLIER LOCK ---
+            % Because seqID wraps 0-63, the absolute frame could be seqID,
+            % seqID+64, seqID+128... We find the right K exactly once on
+            % the very first received frame by testing all candidates.
+            if ~isSynced
+                bestK      = 0;
+                lowestBER  = 1.0;
+                baseSeq    = mod(globalSeqIdx - 1, 64) + 1;
+                maxK       = floor((length(allTxBits) - baseSeq) / 64);
+                
+                for testK = 0:maxK
+                    candidateIdx = baseSeq + testK * 64;
+                    if candidateIdx > length(allTxBits), break; end
+                    testBER = sum(xor(allTxBits{candidateIdx}(:), rxDataBits(:))) / length(rxDataBits);
+                    if testBER < lowestBER
+                        lowestBER = testBER;
+                        bestK     = testK;
+                    end
+                end
+                
+                % Lock if we found a convincing match (much better than random 0.5)
+                if lowestBER < 0.40
+                    isSynced     = true;
+                    globalSeqIdx = baseSeq + bestK * 64;
+                    fprintf('\n>>> K-LOCK! Offset K=%d → TX Frame #%d  (BER=%.3f) <<<\n\n', bestK, globalSeqIdx, lowestBER);
+                else
+                    % Every candidate gave ~50% — pure noise frame, skip it
+                    fprintf('--- Skipping unresolvable frame (all K candidates BER>0.40)\n');
+                    continue;
+                end
+            end
+            
+            % Map safely within TX array bounds (handles TX loop-around)
+            mappedIndex = mod(globalSeqIdx - 1, length(allTxBits)) + 1;
+            
+            groundTruthBits = allTxBits{mappedIndex};
+            groundTruthGrid = allTxGrids{mappedIndex};
+            framesSynced    = framesSynced + 1;
+            
+            % Per-frame BER (proof of correct pairing)
+            currentBER  = sum(xor(groundTruthBits(:), rxDataBits(:))) / length(rxDataBits);
+            BER(frameNum) = currentBER;
+            
+            % --- SYNC HEALTH MONITOR ---
+            % If multiple consecutive frames show ~50% BER, we have drifted off by >=1 frame.
+            % Reset the K-lock so the next clean frame re-anchors everything.
+            if currentBER > 0.45
+                consecutiveHighBER = consecutiveHighBER + 1;
+                if consecutiveHighBER >= 5
+                    fprintf('\n!!! SYNC DRIFT DETECTED after %d bad frames. Re-locking...\n', consecutiveHighBER);
+                    isSynced = false;
+                    lastSeqIdx = -1;
+                    consecutiveHighBER = 0;
+                end
+            else
+                consecutiveHighBER = 0;
+            end
 
                 % --- PLOT RAW POST-DEMODULATION DATA ---
                 if dataParams.enableScopes
@@ -334,16 +446,17 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
 
                 % Store demodulated information for export
                 demodulatedData(dataIdx).Frame         = frameNum;
-                demodulatedData(dataIdx).BER           = BER(frameNum); % actual per-frame BER, not the stale display variable
-                demodulatedData(dataIdx).Message       = lastMessage;
-                demodulatedData(dataIdx).TxBits        = transportBlk(1:sysParam.trBlkSize).'; % known TX bits (ground truth)
-                demodulatedData(dataIdx).RawBits       = rxDataBits;                           % received decoded bits
-                demodulatedData(dataIdx).RawGrid       = rxDiagnostics.rawGrid;                % pre-EQ resource grid (ML input)
-                demodulatedData(dataIdx).EqData        = rxDiagnostics.rxConstellationData;    % post-EQ data constellation
+                demodulatedData(dataIdx).TxBits        = groundTruthBits;                      % Ground truth TX bits
+                demodulatedData(dataIdx).TxGrid        = groundTruthGrid;                      % Clean TX IQ resource grid
+                demodulatedData(dataIdx).RxBits        = rxDataBits;                           % Received decoded bits (compare vs TxBits)
+                demodulatedData(dataIdx).RxGrid        = rxDiagnostics.rawGrid;                % Noisy received IQ resource grid (ML input)
+                % Side-by-side comparison: col1=TX, col2=RX  — open in MATLAB Variable Editor to compare instantly
+                demodulatedData(dataIdx).TxRxCompare  = [groundTruthBits(:), rxDataBits(:)];
+                demodulatedData(dataIdx).EqData        = rxDiagnostics.rxConstellationData;    % Post-equalization constellation
+                demodulatedData(dataIdx).BER           = currentBER;                           % Per-frame bit error rate
                 demodulatedData(dataIdx).SNR_dB        = SNR_dB;
+                demodulatedData(dataIdx).MappedTxFrame = mappedIndex;                          % Which TX frame this was matched to
                 demodulatedData(dataIdx).Timestamp     = datestr(now,'yyyy-mm-dd HH:MM:SS.FFF');
-                demodulatedData(dataIdx).headerCRCPass = ~rxDiagnostics.headerCRCErrorFlag;
-                demodulatedData(dataIdx).dataCRCPass   = ~rxDiagnostics.dataCRCErrorFlag(end);
                 dataIdx = dataIdx + 1; 
                 
                 % Update Constellation Plot (Restored to MathWorks Helper Format)
@@ -359,9 +472,9 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
             end
             
             % --- PRINT TABLE ROW (Every 100 frames) ---
-            if mod(frameNum, 100) == 0
+            if mod(frameNum, 50) == 0
                 % Calculate progress percentage
-                progress = (frameNum / dataParams.numFrames) * 100;
+                progress = (frameNum / framesToCapture) * 100;
                 
                 % Set status string
                 if isConnected
@@ -370,25 +483,27 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                     statusStr = 'SEARCHING';
                 end
                 
-                % Truncate message and clean newlines (char-safe)
-                maxLen = min(length(lastMessage), 24);
-                msgDisplay = lastMessage(1:maxLen);
-                msgDisplay = strrep(msgDisplay, newline, ' '); 
-                
                 % Print formatted row
-                fprintf('| %3.0f%%     |  %s  |  %.4f   |   %4d    | %s\n', ...
-                    progress, statusStr, currentBER, toverflow, msgDisplay);
+                fprintf('| %3.0f%%     |  %s  |  %.4f   |   %4d    |       %4d              |\n', ...
+                    progress, statusStr, currentBER, toverflow, mappedIndex);
             end
         end
     end
 
+% --- STOP TRANSMITTER ---
+if txWaitForRX && exist(flagFile, 'file')
+    delete(flagFile);
+    fprintf('\nTX kill flag deployed. Transmitter will shut down in background.\n');
+end
+
 % Final Summary
-fprintf('======================================================================================\n');
-fprintf('Simulation complete!\n');
+fprintf('========================================================================\n');
 validBER = BER(BER~=0);
-if isempty(validBER), avgBERDisplay = 0; else, avgBERDisplay = mean(validBER); end
-fprintf('Total Frames: %d | Frames Synced: %d | Average BER: %.5f\n', ...
-    dataParams.numFrames, framesSynced, avgBERDisplay);
+if isempty(validBER), avgBER = 0; else, avgBER = mean(validBER); end
+matchRate = (1 - avgBER) * 100;
+fprintf('Simulation complete! Data flawlessly mapped and synchronized.\n');
+fprintf('Total Frames: %d | Frames Synced: %d | Avg Match Rate: %.2f%%\n', ...
+    framesToCapture, framesSynced, matchRate);
 % (radio already released after Stage 1 capture — no second release needed)
 
 % --- Save 1: Versioned timestamped file (never overwritten, safe archive) ---

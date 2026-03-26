@@ -13,3 +13,6 @@ T/tx_reference*.json
 
 # Inter-process Communication Flags
 *.flag
+
+# Ignored sub-repositories or external directories
+Example/

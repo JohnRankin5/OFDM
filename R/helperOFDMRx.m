@@ -195,7 +195,7 @@ userData = equalizedData;
 [headerBits,headerCRCErrFlag] = ...
     OFDMHeaderRecovery(headerData,sysParam);
 [modOrder, codeIndex, ~, fftLength,...
-    modName,codeRate] = OFDMHeaderUnpack(headerBits);
+    modName,codeRate,frameSeqNum] = OFDMHeaderUnpack(headerBits);
 % if isfield(sysParam,'isSDR')
 %     % if modOrder ~= sysParam.modOrder
 %     %     error('The modulation scheme detected (%s), does not match the modulation scheme mentioned in the data parameters. This results in invalid buffer sizes at the receiver and data decoding is not possible',modName);
@@ -269,11 +269,12 @@ diagnostics = struct( ...
     'decodedModOrder',modOrder,...
     'headerCRCErrorFlag',headerCRCErrFlag,...
     'dataCRCErrorFlag',dataCRCErrFlag,...
-    'rawGrid',demodulatedData); % <--- ADD THIS LINE AND COMMA
+    'frameSeqNum',frameSeqNum,...
+    'rawGrid',demodulatedData);
 
 end
 
-function [modOrder,codeRateIndex,fftLenIndex,fftLength,modType,codeRate] = OFDMHeaderUnpack(inBits)
+function [modOrder,codeRateIndex,fftLenIndex,fftLength,modType,codeRate,frameSeqNum] = OFDMHeaderUnpack(inBits)
 %OFDMHeaderUnpack Unpacks bit information from header
 % [modOrder, codeRateIndex, fftLenIndex,fftLength, modType, codeRate] = 
 % OFDMHeaderUnpack(inBits)
@@ -297,6 +298,9 @@ modIndex = bit2int(inBits(4:6),3);
 
 % Next 2 bits represent code rate index
 codeRateIndex = bit2int(inBits(7:8),2);
+
+% Bits 9-14 are the 6-bit frame sequence number (0-63)
+frameSeqNum = bit2int(inBits(9:14), 6);
 
 % Modulation order
 if modIndex == 5

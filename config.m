@@ -24,8 +24,8 @@ dataParams.numSymPerFrame = 25;    % OFDM symbols per frame (must be >= 4; do no
 centerFrequency = 9.15e8;          % Center frequency in Hz (915 MHz)
 
 %% Frame Counts
-txNumFrames  = 10000; % TX: safety cap on max frames (used only if txWaitForRX=false)
-rxNumFrames  = 10000; % RX: how many valid payload data frames to capture and save
+txNumFrames  = 1000; % TX: safety cap on max frames (used only if txWaitForRX=false)
+rxNumFrames  = 1000; % RX: how many valid payload data frames to capture and save
 
 % Set true  = TX runs until RX finishes (recommended — no timing guesswork)
 % Set false = TX runs for exactly txNumFrames then stops regardless of RX
