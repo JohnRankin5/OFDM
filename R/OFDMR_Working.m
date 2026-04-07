@@ -131,7 +131,7 @@ captureFilename  = fullfile(captureDir, sprintf('capture_%s.mat', captureTimesta
 %   Timestamp     - wall-clock time this frame was decoded
 %   headerCRCPass - true if header CRC check passed
 %   dataCRCPass   - true if data CRC check passed
-demodulatedData = struct('Frame',{}, 'TxBits',{}, 'TxGrid',{}, ...
+demodulatedData = struct('Frame',{}, 'TxBits',{}, 'TxGrid',{}, 'TxGridTrimmed',{}, ...
     'RxBits',{}, 'RxGrid',{}, 'TxRxCompare',{}, 'EqData',{}, ...
     'BER',{}, 'SNR_dB',{}, 'MappedTxFrame',{}, 'FrameSeqID',{}, 'Timestamp',{});
 dataIdx = 1;
@@ -452,7 +452,15 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                 % Store demodulated information for export
                 demodulatedData(dataIdx).Frame         = frameNum;
                 demodulatedData(dataIdx).TxBits        = groundTruthBits;                      % Ground truth TX bits
-                demodulatedData(dataIdx).TxGrid        = groundTruthGrid;                      % Clean TX IQ resource grid
+                demodulatedData(dataIdx).TxGrid        = groundTruthGrid;                      % Clean TX IQ resource grid (Full)
+                
+                % Extract perfectly trimmed TxGrid containing ONLY the data payload 
+                % subcarriers to perfectly match RxGrid dimensions for ML pairing
+                modDataInd = 1:sysParam.usedSubCarr;
+                pilotInd = (1:sysParam.pilotSpacing:sysParam.usedSubCarr).';
+                modDataInd(pilotInd) = [];
+                demodulatedData(dataIdx).TxGridTrimmed = groundTruthGrid(modDataInd, (sysParam.headerIdx+1):end);
+                
                 demodulatedData(dataIdx).RxBits        = rxDataBits;                           % Received decoded bits (compare vs TxBits)
                 demodulatedData(dataIdx).RxGrid        = rxDiagnostics.rawGrid;                % Noisy received IQ resource grid (ML input)
                 % Side-by-side comparison: col1=TX, col2=RX  — open in MATLAB Variable Editor to compare instantly
