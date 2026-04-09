@@ -190,7 +190,7 @@ if txWaitForRX
         pause(0.5);
     end
     fprintf('RX Flag detected! Sparing 10.0 seconds for SDR boot sequence...\n');
-    pause(15.0);
+    pause(24.0);
     fprintf('TX is now continuously broadcasting signal.\n');
     
     frameNum = 0;

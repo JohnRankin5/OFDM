@@ -297,16 +297,11 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
             % --- AUTO RECOVERY ---
             % Diagnostic confirmed: BER=0 but CRC=0 after TX loop gap.
             % The decoder is mathematically correct but the header framing
-            % drifted by the loop-boundary glitch. Fix: only un-camp the
-            % sync search — preserve the rolling signalBuffer so the
-            % filter state stays valid. Do NOT skip frames.
+            % drifted by the loop-boundary glitch. Fix: clear sync, camp,
+            % channel AND frontend so corrupted buffer is dropped.
             if consecutiveFails >= 3
                 fprintf('|  %02.0f%%     | [GAP FIX]   |   -----   |   -----   | Re-calibrating phase lock...\n', (framesCaptured/framesToCapture)*100);
-                % Only clear the sync/camp/channel functions.
-                % helperOFDMRxFrontEnd is intentionally NOT cleared — its
-                % persistent signalBuffer contains live IQ data and must
-                % keep rolling to avoid decoding from a zero-padded buffer.
-                clear helperOFDMRx helperOFDMRxSearch helperOFDMChannelEstimation;
+                clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
                 signalDetected = false;
                 isConnected = false;
                 consecutiveFails = 0;
@@ -333,10 +328,8 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                 else
                     % Clean delta unwrap (handles 63→0 rollover)
                     delta = mod(seqId - lastSeqIdx, 64);
-                    % Sanity check: delta > 32 means a backwards jump > half-wrap.
-                    % Treat as +1 increment (likely a re-sync glitch, not real jump).
-                    if delta == 0 || delta > 32
-                        delta = 1;
+                    if delta == 0
+                        delta = 64; % 64 frames dropped (same seqId means a full wrap)
                     end
                     globalSeqIdx = globalSeqIdx + delta;
                     lastSeqIdx   = seqId;
@@ -399,6 +392,13 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
                     isSynced = false;
                     lastSeqIdx = -1;
                     consecutiveHighBER = 0;
+                    
+                    % We MUST clear the physical tracking to force re-sync
+                    clear helperOFDMRx helperOFDMRxSearch helperOFDMRxFrontEnd helperOFDMChannelEstimation;
+                    signalDetected = false;
+                    isConnected = false;
+                    sysParam.timingAdvance = 0;
+                    continue;
                 end
             else
                 consecutiveHighBER = 0;
@@ -511,8 +511,12 @@ while framesCaptured < framesToCapture && (chunkIdx + sysParam.txWaveformSize - 
 
 % Final Summary
 fprintf('========================================================================\n');
-validBER = BER(BER~=0);
-if isempty(validBER), avgBER = 0; else, avgBER = mean(validBER); end
+if dataIdx > 1
+    validBER = [demodulatedData(1:dataIdx-1).BER];
+    avgBER = mean(validBER);
+else
+    avgBER = 0;
+end
 matchRate = (1 - avgBER) * 100;
 fprintf('Simulation complete! Data flawlessly mapped and synchronized.\n');
 fprintf('Total Frames: %d | Frames Synced: %d | Avg Match Rate: %.2f%%\n', ...
