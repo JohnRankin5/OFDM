@@ -29,11 +29,16 @@ rxFiltered = rxObj.rxFilter(rxIn);
 
 % Enter signal into buffer and perform timing adjustment
 signalBuffer = [signalBuffer(frameLen+(1:frameLen)); rxFiltered; zeros(symLen*2,1)];
-    % Ensure timingAdvance doesn't cause a negative or zero index
+    % Ensure timingAdvance doesn't cause out-of-bounds array scaling
     timingAdvance = sysParam.timingAdvance;
-    if timingAdvance < 0
+    if isempty(timingAdvance) || timingAdvance < 0
         timingAdvance = 0;
     end
+    
+    % If the timing lock mathematically latched onto the subsequent frame (index > frameLen),
+    % we simply map it cyclically to the current frame window to prevent memory crashes!
+    timingAdvance = mod(timingAdvance, frameLen);
+    
     rxOut = signalBuffer(timingAdvance+(1:frameLen+2*symLen)); % output one frame plus the sync and ref symbol of the next frame
 
 end

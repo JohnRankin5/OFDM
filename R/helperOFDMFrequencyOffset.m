@@ -31,7 +31,8 @@ if isempty(sampleAvgBuffer)
     sampleAvgBuffer = zeros(6*numAvgCols*symbLen,1);
 end
 
-corrIn = [sampleAvgBuffer(numSampPerFrame+1:end); rxWaveform];
+% Prevent infinite memory leak by shifting buffer by exact rxWaveform chunk size
+corrIn = [sampleAvgBuffer(buffLen+1:end); rxWaveform];
 sampleAvgBuffer = corrIn;
 
 % Form two correlator inputs, the second delayed from

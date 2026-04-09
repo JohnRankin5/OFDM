@@ -5,6 +5,7 @@
 % =============================================================================
 
 % Load shared parameters
+close all; clear; clc;
 run(fullfile(fileparts(mfilename('fullpath')), '..', 'config.m'));
 
 % TX-specific parameters
@@ -100,54 +101,52 @@ txObj = helperOFDMTxInit(sysParam);
 
 tunderrun = 0; % Initialize count for underruns
 
-% A known payload is generated in the function helperOFDMSetParams with
-% respect to the calculated trBlkSize
-% Store data bits for BER calculations
-txParam.txDataBits = trBlk;
-[txOut,txGrid,txDiagnostics] = helperOFDMTx(txParam,sysParam,txObj);
+% Make unique TX bits and waveforms for ALL requested frames (e.g. 10,000)
+numSeq = dataParams.numFrames;
+allTxBits = cell(1, numSeq);
+allTxGrids = cell(1, numSeq);
+
+txOutSize = sysParam.txWaveformSize;
+txWaveform = zeros(txOutSize * numSeq, 1);
+
+fprintf('Generating %d unique TX frames (this may take a moment)...\n', numSeq);
+for seqIdx = 1:numSeq
+    % Random stream per frame — maximum diversity for ML training
+    txParam.txDataBits = randi([0 1], sysParam.trBlkSize, 1);
+    
+    % Embed 6-bit wrapped sequence ID so RX can identify each frame in the header
+    txParam.frameSeqNum = mod(seqIdx - 1, 64);
+    
+    [txOut,txGrid,~] = helperOFDMTx(txParam,sysParam,txObj);
+    
+    allTxBits{seqIdx}  = txParam.txDataBits(1:sysParam.trBlkSize);
+    allTxGrids{seqIdx} = txGrid;
+    
+    % Insert directly into the massive TX array
+    txWaveform( txOutSize*(seqIdx-1)+1 : seqIdx*txOutSize ) = txOut;
+    
+    if mod(seqIdx, 1000) == 0
+        fprintf('Generated %d/%d frames...\n', seqIdx, numSeq);
+    end
+end
 
 % --- Save TX reference data for ML training ---
-% tx_reference.mat is the ground-truth label file paired with RX captures.
-%   txGrid  : clean transmitted resource grid (numSubCar x numSymPerFrame complex)
-%             This is the ideal, noise-free version of RawGrid from the RX.
-%   trBlk   : known transmitted bit sequence (1 x trBlkSize)
-%             This is the ground-truth label for RawBits from the RX.
-%   sysParam: system parameters used for this transmission
+% Sequence maps frameSeqNum to exact grid and bits
 txRefDir  = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'captures');
 if ~exist(txRefDir, 'dir'), mkdir(txRefDir); end
 txRefTimestamp = datestr(now, 'yyyy-mm-dd_HH-MM-SS');
 txRefFile = fullfile(txRefDir, sprintf('tx_reference_%s.mat', txRefTimestamp));
-save(txRefFile, 'txGrid', 'trBlk', 'sysParam');
-% Also save a fixed-name version for quick pairing with OFDM_Demodulated_Data.mat
-save(fullfile(txRefDir, '..', 'tx_reference.mat'), 'txGrid', 'trBlk', 'sysParam');
-fprintf('TX reference saved: %s\n', txRefFile);
+save(txRefFile, 'allTxBits', 'allTxGrids', 'sysParam', '-v7.3');
 
-% Display the grid if verbosity flag is enabled
-if dataParams.verbosity
-    helperOFDMPlotResourceGrid(txGrid,sysParam);
-end
+% Overwrite the base reference file (delete first — HDF5 can't cleanly overwrite)
+baseRefFile = fullfile(txRefDir, '..', 'tx_reference.mat');
+if exist(baseRefFile, 'file'), delete(baseRefFile); end
+save(baseRefFile, 'allTxBits', 'allTxGrids', 'sysParam', '-v7.3');
+fprintf('TX reference saved: %d frames → %s\n', numSeq, baseRefFile);
 
-% Repeat the data in a buffer for PLUTO radio to make sure there are NO
-% underruns. OS thread latency causes micro-gaps if we loop too tightly.
-% We dynamically size the TX burst to perfectly encompass the entire desired
-% RX capture period (plus a small warmup margin), eliminating all loop gaps.
-txOutSize = length(txOut);
-if contains(radioDevice,'PLUTO')
-    % rxNumFrames + 40 margin frames to account for connection setup
-    requiredFrames = dataParams.numFrames + 40;
-    
-    % If the required buffer exceeds 2M samples (safety limit for USB DMA), cap it
-    if (requiredFrames * txOutSize) > 2000000
-        requiredFrames = floor(2000000 / txOutSize);
-        fprintf('[WARNING] Requesting huge TX buffer. Capped at %d frames to prevent SDR crash.\n', requiredFrames);
-    end
-    
-    txWaveform = zeros(txOutSize * requiredFrames, 1);
-    for i = 1:requiredFrames
-        txWaveform(txOutSize*(i-1)+1 : i*txOutSize) = txOut;
-    end
-else
-    txWaveform = txOut;
+% Optional: Instead of spectrum analyzing the entire massive array, just do a snippet
+if dataParams.enableScopes
+    spectrumAnalyze(txWaveform(1:txOutSize*10));
 end
 
 
@@ -155,15 +154,45 @@ if dataParams.enableScopes
     spectrumAnalyze(txOut);
 end
 
+% The PlutoSDR driver has a hard limit of 16.7M samples per continuous buffer push,
+% AND it will violently crash if the input array size changes between calls.
+if length(txWaveform) <= 10000000
+    % Array is small enough to fit completely inside the driver, no chunking needed!
+    chunkSamples = length(txWaveform);
+    numChunks = 1;
+else
+    % Array is overwhelmingly large, we mathematically chunk and securely pad it!
+    maxFramesPerChunk = floor(10000000 / txOutSize);
+    chunkSamples = maxFramesPerChunk * txOutSize;
+    numChunks = ceil(length(txWaveform) / chunkSamples);
+    
+    paddedLength = numChunks * chunkSamples;
+    if paddedLength > length(txWaveform)
+        padSamples = paddedLength - length(txWaveform);
+        % Robust mathematical wrap-around that works even if pad > original
+        numReps = ceil(padSamples / length(txWaveform));
+        circularPad = repmat(txWaveform, numReps, 1);
+        txWaveform = [txWaveform; circularPad(1:padSamples)];
+    end
+end
 
+% Normalize the absolute root directory without using relative '..' strings
+rootDir = fileparts(fileparts(mfilename('fullpath')));
+flagFile = fullfile(rootDir, 'rx_running.flag');
 
-
-%After the signal is generated, we need to transmit it over the radio:
-
-flagFile = fullfile(fileparts(mfilename('fullpath')), '..', 'R', 'rx_running.flag');
+% Clean up any stale flag from a previous crashed session at TX startup
+if exist(flagFile, 'file'), delete(flagFile); end
 
 if txWaitForRX
     % --- MODE: run until RX finishes (flag file controlled) ---
+    fprintf('txWaitForRX=true: TX waiting for RX to initialize...\n');
+    while ~exist(flagFile, 'file')
+        pause(0.5);
+    end
+    fprintf('RX Flag detected! Sparing 10.0 seconds for SDR boot sequence...\n');
+    pause(24.0);
+    fprintf('TX is now continuously broadcasting signal.\n');
+    
     frameNum = 0;
     missingFlagCount = 0; % Ensure flag is really gone, not just temporarily locked
     fprintf('txWaitForRX=true: TX broadcasts until RX finishes.\n');
@@ -171,15 +200,21 @@ if txWaitForRX
 
     while frameNum < txNumFrames
         frameNum  = frameNum + 1;
-        underrun  = radio(txWaveform);
-        tunderrun = tunderrun + underrun;
+        
+        % Feed the SDR in chunks to bypass memory limits
+        for cIdx = 1:numChunks
+            idxStart = (cIdx-1)*chunkSamples + 1;
+            idxEnd   = min(cIdx*chunkSamples, length(txWaveform));
+            underrun = radio(txWaveform(idxStart:idxEnd));
+            tunderrun = tunderrun + underrun;
+        end
 
         % Robust flag check: require flag to be missing multiple times consecutively
         if frameNum > 10
             if ~exist(flagFile, 'file')
                 missingFlagCount = missingFlagCount + 1;
                 if missingFlagCount >= 5
-                    fprintf('\nRX finished. TX stopping after frame %d.\n', frameNum);
+                    fprintf('\nRX finished. TX stopping after %d TX Array loops.\n', frameNum);
                     break;
                 end
             else
@@ -187,23 +222,28 @@ if txWaitForRX
             end
         end
 
-        if mod(frameNum, 100) == 0
+        if mod(frameNum, 5) == 0
             rxActive = exist(flagFile, 'file');
-            fprintf('Time: %s | Frame: %d | Underruns: %d | RX active: %s\n', ...
+            fprintf('Time: %s | TX Array Loops Sent: %d | Underruns: %d | RX active: %s\n', ...
                 datestr(now,'HH:MM:SS'), frameNum, tunderrun, mat2str(logical(rxActive)));
         end
     end
 
 else
     % --- MODE: fixed frame count ---
-    fprintf('txWaitForRX=false: TX broadcasts for %d frames.\n', txNumFrames);
+    fprintf('txWaitForRX=false: TX broadcasts for %d Array loops.\n', txNumFrames);
+    
     for frameNum = 1:txNumFrames
-        underrun  = radio(txWaveform);
-        tunderrun = tunderrun + underrun;
+        for cIdx = 1:numChunks
+            idxStart = (cIdx-1)*chunkSamples + 1;
+            idxEnd   = min(cIdx*chunkSamples, length(txWaveform));
+            underrun = radio(txWaveform(idxStart:idxEnd));
+            tunderrun = tunderrun + underrun;
+        end
 
         if mod(frameNum, 100) == 0
             progress = (frameNum / txNumFrames) * 100;
-            fprintf('Time: %s | Frame: %d/%d (%.1f%%) | Underruns: %d\n', ...
+            fprintf('Time: %s | Loop: %d/%d (%.1f%%) | Underruns: %d\n', ...
                 datestr(now,'HH:MM:SS'), frameNum, txNumFrames, progress, tunderrun);
         end
     end

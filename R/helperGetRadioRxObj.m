@@ -21,7 +21,14 @@ if strcmpi(ofdmRx.RadioDevice,'PLUTO')
     % We compute how many frames this takes, plus a 150-frame margin to allow
     % the physical SDR AGC and filters to settle into a clean analog state.
     syncFrames = ceil(144 / ofdmRx.numSymPerFrame) + 150;
-    radio.NumFramesInBurst = ofdmRx.NumFrames + syncFrames;
+    
+    % Clamp the total burst size to the physical libiio DMA limit (~16.7M samples)
+    burstFrames = ofdmRx.NumFrames + syncFrames;
+    maxFrames = floor(16000000 / ofdmRx.txWaveformSize);
+    if burstFrames > maxFrames
+        burstFrames = maxFrames;
+    end
+    radio.NumFramesInBurst = burstFrames;
 else
     switch ofdmRx.RadioDevice
         case {'B200','B210'}
@@ -37,7 +44,7 @@ else
                 'OutputDataType',       'double',...
                 'ClockSource',          'Internal',...
                 'EnableBurstMode',      true,...
-                'NumFramesInBurst',     ofdmRx.NumFrames + syncFrames);
+                'NumFramesInBurst',     burstFrames);
         case {'N300','N310','N320/N321','N200/N210/USRP2','X300','X310','X410','E320'}
             radio = comm.SDRuReceiver(...
                 'Platform',             ofdmRx.RadioDevice, ...
@@ -50,7 +57,7 @@ else
                 'OutputDataType',       'double', ...
                 'ChannelMapping',       1, ...
                 'EnableBurstMode',      true,...
-                'NumFramesInBurst',     ofdmRx.NumFrames + syncFrames);
+                'NumFramesInBurst',     burstFrames);
     end
 end
 % To visualize the constellation plot of the OFDM demodulated signal, you create

@@ -134,10 +134,18 @@ switch txParamConfig.codeRateIndex
     case 3
         codeRateIndexBits = dec2bin(3,nbitsCodeRateIndex) == '1';
 end
-reserveBits = zeros(1,14-nbitsFFTLenIndex-nbitsCodeRateIndex-nbitsModTypeIndex); % Reserve bits for future use
 
-% Form header bits
-headerBits = [FFTLenIndexBits, modTypeIndexBits, codeRateIndexBits, reserveBits];
+% Embed 6-bit frame sequence number (0-63) into header reserve bits
+% This is the lightweight sync word that lets the RX identify which exact
+% frame it decoded without any brute-force correlation.
+if isfield(txParamConfig, 'frameSeqNum')
+    seqBits = dec2bin(mod(txParamConfig.frameSeqNum, 64), 6) == '1';
+else
+    seqBits = false(1, 6);
+end
+
+% Form header bits (length 14: 3 FFT + 3 mod + 2 codeRate + 6 seqID)
+headerBits = [FFTLenIndexBits, modTypeIndexBits, codeRateIndexBits, seqBits];
 diagnostics.headerBits = headerBits.';
 
 % Append CRC bits
